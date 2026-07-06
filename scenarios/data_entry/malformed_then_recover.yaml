@@ -1,0 +1,27 @@
+name: malformed-then-recover
+agent: data_entry
+request: List the files in the workspace and report what you see.
+behaviors:
+  v1:
+  - malformed: '```json {broken'
+  - tool_calls:
+    - tool: list_files
+      args: {}
+  - final: 'The workspace contains one file: members.csv.'
+  v2:
+  - malformed: '```json {broken'
+  - tool_calls:
+    - tool: list_files
+      args: {}
+  - final: 'The workspace contains one file: members.csv.'
+expect:
+  status: finished
+  tools_executed:
+  - list_files
+  final_contains:
+  - members.csv
+  min_events: 8
+workspace_files:
+  members.csv: 'name,email,tier
+
+    '

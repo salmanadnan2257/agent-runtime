@@ -1,0 +1,39 @@
+name: read-fails-every-retry
+agent: research_summarizer
+request: Summarize notes/wal.txt.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/wal.txt
+  - final: I could not read notes/wal.txt after several attempts, so there is nothing
+      to summarize.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/wal.txt
+  - final: I could not read notes/wal.txt after several attempts, so there is nothing
+      to summarize.
+expect:
+  status: finished
+  tools_executed: []
+  final_contains:
+  - could not read
+workspace_files:
+  notes/wal.txt: 'SQLite WAL mode allows one writer and many readers concurrently.
+
+    '
+faults:
+  tools:
+    read_file:
+    - at_attempt: 1
+      kind: exception
+      message: disk error
+    - at_attempt: 2
+      kind: exception
+      message: disk error
+    - at_attempt: 3
+      kind: exception
+      message: disk error

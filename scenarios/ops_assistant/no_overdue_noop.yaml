@@ -1,0 +1,31 @@
+name: no-overdue-noop
+agent: ops_assistant
+request: Check for overdue invoices and chase them if any.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - final: No overdue invoices found; nothing to chase.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - final: No overdue invoices found; nothing to chase.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  tools_not_executed:
+  - draft_email
+  - csv_update
+  final_contains:
+  - no overdue
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-2001,Delta LLC,300.00,2026-08-01,open
+
+    '

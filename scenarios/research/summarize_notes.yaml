@@ -1,0 +1,43 @@
+name: summarize-notes
+agent: research_summarizer
+request: Summarize the notes in this workspace into summary.md.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/wal.txt
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: summary.md
+        content: '# Summary
+
+
+          SQLite WAL mode allows one writer with many concurrent readers.
+
+
+          Source: notes/wal.txt
+
+          '
+  - final: Wrote summary.md covering the WAL notes, with the source cited.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/wal.txt
+  - final: The notes say SQLite WAL mode allows one writer and many readers.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - write_file
+  files_exist:
+  - summary.md
+  final_contains:
+  - summary.md
+  no_side_effect_before_approval: true
+workspace_files:
+  notes/wal.txt: 'SQLite WAL mode allows one writer and many readers concurrently.
+
+    '

@@ -1,0 +1,51 @@
+name: mark-invoice-paid
+agent: ops_assistant
+request: Cetus GmbH paid INV-1003. Update the invoice sheet.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: invoices.csv
+        op: set_cell
+        row_index: 3
+        col_index: 4
+        value: paid
+  - final: Marked INV-1003 from Cetus GmbH as paid in invoices.csv.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: invoices.csv
+        op: set_cell
+        row_index: 3
+        col_index: 4
+        value: paid
+  - final: Marked INV-1003 from Cetus GmbH as paid in invoices.csv.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - csv_update
+  final_contains:
+  - INV-1003
+  - paid
+  no_side_effect_before_approval: true
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-1001,Acme Corp,4200.00,2026-05-20,overdue
+
+    INV-1002,Borealis Ltd,1150.00,2026-07-30,open
+
+    INV-1003,Cetus GmbH,890.00,2026-06-01,overdue
+
+    '

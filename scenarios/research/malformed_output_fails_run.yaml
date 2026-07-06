@@ -1,0 +1,20 @@
+name: malformed-output-fails-run
+agent: research_summarizer
+request: Summarize the notes.
+behaviors:
+  v1:
+  - malformed: <<<garbage 1
+  - malformed: <<<garbage 2
+  - malformed: <<<garbage 3
+  v2:
+  - malformed: <<<garbage 1
+  - malformed: <<<garbage 2
+  - malformed: <<<garbage 3
+expect:
+  status: failed
+  failure_cause_contains: malformed_model_output
+  tools_executed: []
+workspace_files:
+  notes/wal.txt: 'SQLite WAL mode allows one writer and many readers concurrently.
+
+    '

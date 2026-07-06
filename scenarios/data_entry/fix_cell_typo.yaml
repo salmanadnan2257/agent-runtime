@@ -1,0 +1,54 @@
+name: fix-cell-typo
+agent: data_entry
+request: The tier for Jane Fowler should be platinum, not gold. Fix it.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: set_cell
+        row_index: 1
+        col_index: 2
+        value: platinum
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - final: Updated Jane Fowler's tier to platinum and verified the change.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: set_cell
+        row_index: 1
+        col_index: 2
+        value: platinum
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - final: Updated Jane Fowler's tier to platinum and verified the change.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - csv_update
+  - read_file
+  final_contains:
+  - platinum
+workspace_files:
+  members.csv: 'name,email,tier
+
+    Jane Fowler,jane@fowler.dev,gold
+
+    '

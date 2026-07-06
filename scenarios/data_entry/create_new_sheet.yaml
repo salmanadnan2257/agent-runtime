@@ -1,0 +1,29 @@
+name: create-new-sheet
+agent: data_entry
+request: Create an empty attendance sheet with headers date,name,status.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: attendance.csv
+        content: 'date,name,status
+
+          '
+  - final: Created attendance.csv with headers date,name,status.
+  v2:
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: attendance.csv
+        content: 'date,name,status
+
+          '
+  - final: Created attendance.csv with headers date,name,status.
+expect:
+  status: finished
+  tools_executed:
+  - write_file
+  files_exist:
+  - attendance.csv
+  no_side_effect_before_approval: true

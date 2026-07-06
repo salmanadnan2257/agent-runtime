@@ -1,0 +1,47 @@
+name: cite-sources-digest
+agent: research_summarizer
+request: Write a cited two-line digest of the event sourcing note.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/es.txt
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: cited.md
+        content: 'Event sourcing derives state from an append-only log.
+
+          (source: notes/es.txt)
+
+          '
+  - final: Wrote cited.md with the digest and its source, notes/es.txt.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/es.txt
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: cited.md
+        content: 'Event sourcing derives state from an append-only log.
+
+          (source: notes/es.txt)
+
+          '
+  - final: Wrote cited.md with the digest and its source, notes/es.txt.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - write_file
+  files_exist:
+  - cited.md
+  final_contains:
+  - notes/es.txt
+workspace_files:
+  notes/es.txt: 'Event sourcing derives state from an append-only log of facts.
+
+    '

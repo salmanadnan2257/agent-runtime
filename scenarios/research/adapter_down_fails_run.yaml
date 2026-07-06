@@ -1,0 +1,20 @@
+name: adapter-down-fails-run
+agent: research_summarizer
+request: Summarize the notes.
+behaviors:
+  v1:
+  - final: unreachable
+  v2:
+  - final: unreachable
+expect:
+  status: failed
+  failure_cause_contains: adapter_error
+  tools_executed: []
+faults:
+  model:
+  - at_call: 1
+    kind: adapter_500
+  - at_call: 2
+    kind: adapter_500
+  - at_call: 3
+    kind: adapter_500

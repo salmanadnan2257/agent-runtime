@@ -1,0 +1,48 @@
+name: schedule-followup-call
+agent: ops_assistant
+request: Schedule a follow-up call about the Acme overdue invoice for next Monday.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: calendar_add
+      args:
+        title: 'Follow-up call: Acme INV-1001'
+        starts_at: '2026-07-13T10:00:00'
+        notes: Discuss overdue invoice INV-1001
+  - final: Scheduled a follow-up call about Acme INV-1001 for Monday 2026-07-13
+      at 10:00.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: calendar_add
+      args:
+        title: 'Follow-up call: Acme INV-1001'
+        starts_at: '2026-07-13T10:00:00'
+        notes: Discuss overdue invoice INV-1001
+  - final: Scheduled a follow-up call about Acme INV-1001 for Monday 2026-07-13
+      at 10:00.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - calendar_add
+  final_contains:
+  - '2026-07-13'
+  no_side_effect_before_approval: true
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-1001,Acme Corp,4200.00,2026-05-20,overdue
+
+    INV-1002,Borealis Ltd,1150.00,2026-07-30,open
+
+    INV-1003,Cetus GmbH,890.00,2026-06-01,overdue
+
+    '

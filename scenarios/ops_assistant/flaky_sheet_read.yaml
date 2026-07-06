@@ -1,0 +1,38 @@
+name: flaky-sheet-read
+agent: ops_assistant
+request: Check the invoice sheet and report totals.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - final: The sheet lists 3 invoices totalling $6240.00; 2 are overdue.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - final: The sheet lists 3 invoices totalling $6240.00; 2 are overdue.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  final_contains:
+  - 3 invoices
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-1001,Acme Corp,4200.00,2026-05-20,overdue
+
+    INV-1002,Borealis Ltd,1150.00,2026-07-30,open
+
+    INV-1003,Cetus GmbH,890.00,2026-06-01,overdue
+
+    '
+faults:
+  tools:
+    read_file:
+    - at_attempt: 1
+      kind: exception
+      message: transient io error

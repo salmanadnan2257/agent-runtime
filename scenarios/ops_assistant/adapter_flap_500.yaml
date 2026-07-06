@@ -1,0 +1,37 @@
+name: adapter-flap-500
+agent: ops_assistant
+request: Check the invoice sheet for anything overdue.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - final: 'Two invoices are overdue: INV-1001 (Acme Corp) and INV-1003 (Cetus GmbH).'
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - final: 'Two invoices are overdue: INV-1001 (Acme Corp) and INV-1003 (Cetus GmbH).'
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  final_contains:
+  - INV-1001
+  - INV-1003
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-1001,Acme Corp,4200.00,2026-05-20,overdue
+
+    INV-1002,Borealis Ltd,1150.00,2026-07-30,open
+
+    INV-1003,Cetus GmbH,890.00,2026-06-01,overdue
+
+    '
+faults:
+  model:
+  - at_call: 1
+    kind: adapter_500

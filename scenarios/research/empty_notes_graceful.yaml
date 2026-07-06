@@ -1,0 +1,28 @@
+name: empty-notes-graceful
+agent: research_summarizer
+request: Summarize whatever notes exist.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/empty.txt
+  - final: The notes file is empty; there is nothing to summarize, so no summary
+      file was written.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/empty.txt
+  - final: The notes file is empty; there is nothing to summarize, so no summary
+      file was written.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  tools_not_executed:
+  - write_file
+  final_contains:
+  - nothing to summarize
+workspace_files:
+  notes/empty.txt: ''

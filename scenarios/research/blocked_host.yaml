@@ -1,0 +1,23 @@
+name: blocked-host
+agent: research_summarizer
+request: Fetch https://intranet.evil.example/report and summarize it.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: http_get
+      args:
+        url: https://intranet.evil.example/report
+  - final: 'I could not fetch that page: the host is not on the HTTP allowlist,
+      so no request was made.'
+  v2:
+  - tool_calls:
+    - tool: http_get
+      args:
+        url: https://intranet.evil.example/report
+  - final: 'I could not fetch that page: the host is not on the HTTP allowlist,
+      so no request was made.'
+expect:
+  status: finished
+  tools_executed: []
+  final_contains:
+  - allowlist

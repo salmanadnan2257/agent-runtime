@@ -1,0 +1,52 @@
+name: batch-entry-with-listing
+agent: data_entry
+request: Find the members sheet and add Priya Nair, priya@nair.example, tier gold.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: list_files
+      args: {}
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: append_row
+        row:
+        - Priya Nair
+        - priya@nair.example
+        - gold
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - final: Added Priya Nair to members.csv and verified the row.
+  v2:
+  - tool_calls:
+    - tool: list_files
+      args: {}
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: append_row
+        row:
+        - Priya Nair
+        - priya@nair.example
+        - gold
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - final: Added Priya Nair to members.csv and verified the row.
+expect:
+  status: finished
+  tools_executed:
+  - list_files
+  - csv_update
+  - read_file
+  final_contains:
+  - Priya Nair
+workspace_files:
+  members.csv: 'name,email,tier
+
+    '

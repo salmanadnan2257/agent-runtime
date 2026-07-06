@@ -1,0 +1,53 @@
+name: deny-email-fallback
+agent: ops_assistant
+request: Chase the overdue invoice from Cetus GmbH.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: draft_email
+      args:
+        to: ap@cetus.example
+        subject: Overdue invoice INV-1003
+        body: 'Reminder: INV-1003 is overdue.'
+  - final: The operator denied the reminder email, so I logged INV-1003 for manual
+      follow-up instead.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: draft_email
+      args:
+        to: ap@cetus.example
+        subject: Overdue invoice INV-1003
+        body: 'Reminder: INV-1003 is overdue.'
+  - final: The operator denied the reminder email, so I logged INV-1003 for manual
+      follow-up instead.
+expect:
+  status: finished
+  denied_tools:
+  - draft_email
+  tools_not_executed:
+  - draft_email
+  final_contains:
+  - denied
+  - follow-up
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-1001,Acme Corp,4200.00,2026-05-20,overdue
+
+    INV-1002,Borealis Ltd,1150.00,2026-07-30,open
+
+    INV-1003,Cetus GmbH,890.00,2026-06-01,overdue
+
+    '
+approvals:
+  deny:
+  - draft_email
+  reason: wrong recipient address

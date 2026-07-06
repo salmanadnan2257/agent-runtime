@@ -1,0 +1,66 @@
+name: transcribe-two-records
+agent: data_entry
+request: Transcribe the member records from notes.txt into members.csv.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes.txt
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: append_row
+        row:
+        - Jane Fowler
+        - jane@fowler.dev
+        - gold
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: append_row
+        row:
+        - Omar Hassan
+        - omar@hassan.io
+        - silver
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - final: Transcribed 2 records into members.csv and verified them.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes.txt
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: append_row
+        row:
+        - Jane Fowler
+        - jane@fowler.dev
+        - gold
+  - final: Transcribed 1 record into members.csv.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - csv_update
+  - csv_update
+  - read_file
+  final_contains:
+  - 2 records
+  no_side_effect_before_approval: true
+workspace_files:
+  notes.txt: 'Record 1: Jane Fowler, jane@fowler.dev, membership tier gold
+
+    Record 2: Omar Hassan, omar@hassan.io, membership tier silver
+
+    '
+  members.csv: 'name,email,tier
+
+    '

@@ -1,0 +1,27 @@
+name: invalid-tool-args
+agent: data_entry
+request: Append a blank row to members.csv.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+  - final: The update was rejected because the operation argument was missing; no
+      change was made.
+  v2:
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+  - final: The update was rejected because the operation argument was missing; no
+      change was made.
+expect:
+  status: finished
+  tools_executed: []
+  final_contains:
+  - rejected
+workspace_files:
+  members.csv: 'name,email,tier
+
+    '

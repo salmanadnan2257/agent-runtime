@@ -1,0 +1,33 @@
+name: write-timeout-retry
+agent: data_entry
+request: Save a note file confirming the import finished.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: import_done.txt
+        content: 'import completed
+
+          '
+  - final: Wrote import_done.txt confirming the import completed.
+  v2:
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: import_done.txt
+        content: 'import completed
+
+          '
+  - final: Wrote import_done.txt confirming the import completed.
+expect:
+  status: finished
+  tools_executed:
+  - write_file
+  files_exist:
+  - import_done.txt
+faults:
+  tools:
+    write_file:
+    - at_attempt: 1
+      kind: timeout

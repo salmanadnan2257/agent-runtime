@@ -1,0 +1,70 @@
+name: multi-source-synthesis
+agent: research_summarizer
+request: Combine the two note files into one digest file.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: list_files
+      args: {}
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/wal.txt
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/es.txt
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: digest.md
+        content: '# Digest
+
+
+          - SQLite WAL: one writer, many readers.
+
+          - Event sourcing: state from an append-only log.
+
+          '
+  - final: Wrote digest.md combining both note files.
+  v2:
+  - tool_calls:
+    - tool: list_files
+      args: {}
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/wal.txt
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: notes/es.txt
+  - tool_calls:
+    - tool: write_file
+      args:
+        path: digest.md
+        content: '# Digest
+
+
+          - SQLite WAL: one writer, many readers.
+
+          - Event sourcing: state from an append-only log.
+
+          '
+  - final: Wrote digest.md combining both note files.
+expect:
+  status: finished
+  tools_executed:
+  - list_files
+  - read_file
+  - read_file
+  - write_file
+  files_exist:
+  - digest.md
+workspace_files:
+  notes/wal.txt: 'SQLite WAL mode allows one writer and many readers concurrently.
+
+    '
+  notes/es.txt: 'Event sourcing derives state from an append-only log of facts.
+
+    '

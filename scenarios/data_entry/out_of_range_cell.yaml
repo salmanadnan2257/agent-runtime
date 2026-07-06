@@ -1,0 +1,46 @@
+name: out-of-range-cell
+agent: data_entry
+request: Set the status of row 9 in members.csv to inactive.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: set_cell
+        row_index: 9
+        col_index: 2
+        value: inactive
+  - final: Row 9 does not exist in members.csv (it has 2 rows), so no change was
+      made.
+  v2:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: members.csv
+  - tool_calls:
+    - tool: csv_update
+      args:
+        path: members.csv
+        op: set_cell
+        row_index: 9
+        col_index: 2
+        value: inactive
+  - final: Row 9 does not exist in members.csv (it has 2 rows), so no change was
+      made.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  final_contains:
+  - does not exist
+workspace_files:
+  members.csv: 'name,email,tier
+
+    Jane Fowler,jane@fowler.dev,gold
+
+    '

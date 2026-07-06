@@ -1,0 +1,58 @@
+name: chase-overdue-acme
+agent: ops_assistant
+request: Chase the overdue invoice from Acme Corp with a reminder email.
+behaviors:
+  v1:
+  - tool_calls:
+    - tool: read_file
+      args:
+        path: invoices.csv
+  - tool_calls:
+    - tool: draft_email
+      args:
+        to: billing@acme.example
+        subject: Overdue invoice INV-1001
+        body: 'Hello Acme Corp,
+
+
+          Invoice INV-1001 for $4200.00 was due on 2026-05-20 and is now overdue.
+          Please arrange payment.
+
+
+          Regards'
+  - final: Drafted a reminder email to Acme Corp for overdue invoice INV-1001.
+  v2:
+  - tool_calls:
+    - tool: draft_email
+      args:
+        to: billing@acme.example
+        subject: Overdue invoice INV-1001
+        body: 'Hello Acme Corp,
+
+
+          Invoice INV-1001 for $4200.00 was due on 2026-05-20 and is now overdue.
+          Please arrange payment.
+
+
+          Regards'
+  - final: Drafted a reminder email to Acme Corp for overdue invoice INV-1001.
+expect:
+  status: finished
+  tools_executed:
+  - read_file
+  - draft_email
+  final_contains:
+  - Acme
+  - INV-1001
+  no_side_effect_before_approval: true
+  min_events: 10
+workspace_files:
+  invoices.csv: 'invoice,client,amount,due_date,status
+
+    INV-1001,Acme Corp,4200.00,2026-05-20,overdue
+
+    INV-1002,Borealis Ltd,1150.00,2026-07-30,open
+
+    INV-1003,Cetus GmbH,890.00,2026-06-01,overdue
+
+    '
