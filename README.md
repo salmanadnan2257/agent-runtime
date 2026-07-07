@@ -154,6 +154,7 @@ agentrun serve --port 8321
   deny-with-reason endpoint was exercised through `TestClient`. Pinned it
   as a real dependency rather than a test extra since the deny form is a
   runtime feature.
+- **Writing the exhaustive project documentation honestly.** Getting the documentation right meant not trusting the README's own numbers at face value: cross-checking the stated test and scenario counts against the actual files with wc and grep caught a real discrepancy (the scenario count was off by one) before it went into the PDF.
 
 ## What I learned
 
