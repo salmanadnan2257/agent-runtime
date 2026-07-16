@@ -1,71 +1,40 @@
-\documentclass[11pt]{article}
-\usepackage[margin=2.3cm]{geometry}
-\usepackage{amsmath}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.multipart,calc,decorations.pathreplacing}
-\usepackage{forest}
-\usepackage{listings}
-\usepackage{xcolor}
-\usepackage{booktabs}
-\usepackage{longtable}
-\usepackage{parskip}
-\usepackage{hyperref}
-\usepackage{titlesec}
-\usepackage{enumitem}
-\usepackage{fancyhdr}
-\usepackage{tcolorbox}
-\tcbuselibrary{skins,breakable}
+% explainer-source-hash: 4d4bea81006f364f16c411a054cb9d57eb77e1a4595e4170b63de9c707cca1b7
+% explainer-source-commit: d69d447fe5ba105e60525c789c7bd373c1595b65
+% explainer-generated: 2026-07-16
+% Regenerate with /explain-all (see WIRING.md). Do not edit this stamp by hand:
+% it is how the toolchain knows whether this document still matches the code.
+\documentclass[11pt,a4paper]{article}
+\input{preamble}
 
-\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,citecolor=blue!50!black}
-\definecolor{codebg}{RGB}{245,245,245}
-\definecolor{accent}{RGB}{20,80,150}
-\definecolor{defbox}{RGB}{235,242,250}
-
-\lstset{
-  basicstyle=\ttfamily\small,
-  backgroundcolor=\color{codebg},
-  breaklines=true,
-  frame=single,
-  framerule=0.3pt,
-  rulecolor=\color{gray!40},
-  columns=fullflexible,
-  keywordstyle=\color{accent}\bfseries,
-  commentstyle=\color{gray},
-  showstringspaces=false,
-  xleftmargin=2pt, xrightmargin=2pt,
-}
-
-\titleformat{\section}{\large\bfseries\color{accent}}{\thesection}{0.6em}{}
-\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
-
-\pagestyle{fancy}
-\fancyhf{}
-\fancyhead[L]{\small agent-runtime --- Deep Dive}
-\fancyhead[R]{\small\thepage}
-\renewcommand{\headrulewidth}{0.3pt}
-
-\newtcolorbox{defterm}[1]{colback=defbox,colframe=accent!60!black,title={\textbf{Term: #1}},fonttitle=\small\bfseries,coltitle=white,boxrule=0.4pt,left=6pt,right=6pt,top=3pt,bottom=3pt,breakable}
-
-\newcommand{\code}[1]{\texttt{\small #1}}
-\sloppy
-\emergencystretch=2.5em
-
-\title{\vspace{-1.5cm}\textbf{\Huge agent-runtime}\\[0.3cm]\Large Deep Dive: an event-sourced runtime for tool-using LLM agents}
-\author{Explainer generated for the project owner \\ \small A beginner-safe, exhaustive technical walkthrough of the actual codebase}
+\title{\vspace{-1.5cm}\textbf{\Huge agent-runtime}\\[0.3cm]
+\Large Deep Dive: an event-sourced runtime for tool-using LLM agents}
+\author{A beginner-safe, exhaustive walkthrough of the actual codebase}
 \date{}
 
 \begin{document}
+% Long \code{...} runs (event names, URL routes) cannot hyphenate. Prefer stretched
+% interword space over a line that overflows into the margin and gets clipped.
+\sloppy
+\emergencystretch=3em
 \maketitle
 \thispagestyle{empty}
 
-\begin{tcolorbox}[colback=yellow!10,colframe=yellow!50!black,title=How to read this document,fonttitle=\bfseries]
-This document explains \textbf{exactly} what is implemented in the \code{agent-runtime}
-project folder, as of the code and tests present at the time of writing. Every claim
-traces to a specific file. Technical terms are defined the first time they appear, in a
-boxed callout like this one. Nothing here is invented: where the project's own README
-states an honest limitation (e.g. ``no live API calls were made''), this document
-repeats it rather than smoothing it over.
-\end{tcolorbox}
+\begin{keyidea}{How to read this document}
+This document explains exactly what is implemented in the \file{agent-runtime}
+project folder. Every claim traces to a specific file, and where a claim could be
+checked by running the code, it was run: the test suite, the command line tool, the
+scenario suite and the replay path were all executed while writing this, and what
+they printed is reported here rather than assumed.
+
+Technical terms are defined the first time they appear, in a boxed callout. Assume
+no prior knowledge: if you have never met event sourcing or deterministic replay,
+Sections 2 and 9 build both from nothing.
+
+Red boxes are honest findings. Some repeat limitations the project's own README
+already states; others are defects found by reading and running the code that the
+README does not mention. The two are labelled differently, because the second kind
+is the kind an interviewer might find first.
+\end{keyidea}
 
 \tableofcontents
 \newpage
@@ -74,116 +43,163 @@ repeats it rather than smoothing it over.
 \section{What this project is}
 % ============================================================
 
-\textbf{agent-runtime} is a Python library and command-line tool for running
-\emph{LLM agents} --- programs that use a large language model (LLM) to decide, in a
-loop, which actions to take next --- with the operational machinery that a bare
-``call the model, run a tool, repeat'' loop leaves out: a durable record of every run,
-the ability to replay a run exactly, safe recovery from a crash mid-run, a human
-approval step before anything with a side effect happens, deliberately injected
-failures to prove the system degrades safely, and a suite of scripted regression tests
-that catch behavior changes when the underlying model changes.
+\textbf{agent-runtime} is a Python library and command line tool for running
+\emph{LLM agents} with the operational machinery that a bare ``call the model, run a
+tool, repeat'' loop leaves out: a durable record of every run, the ability to replay
+a run exactly, recovery from a crash mid-run, a human approval step before anything
+with a side effect happens, deliberately injected failures to prove the system
+degrades safely, and a suite of scripted regression tests that catch behavior changes
+when the underlying model changes.
 
-\begin{defterm}{LLM agent}
-A program where a large language model is asked, in a loop, ``given what has
-happened so far, what should happen next?'' The model's answer is either a final
-text answer, or a request to call one or more \emph{tools} (functions the program
-exposes, such as ``read this file'' or ``send this HTTP request''). The program
-executes the requested tool(s), feeds the result back to the model, and asks again.
-This project implements exactly that loop in \code{src/agent\_runtime/runtime.py}.
-\end{defterm}
+\begin{jargon}{LLM agent}
+A \emph{large language model} (LLM) is a machine learning model that produces text
+from text. An \emph{LLM agent} is a program that asks such a model, in a loop, ``given
+what has happened so far, what should happen next?'' The model's answer is either a
+final text answer, or a request to call one or more \emph{tools}: functions the
+program exposes, such as ``read this file'' or ``send this HTTP request''. The program
+executes the requested tools, feeds the results back to the model, and asks again.
+This project implements exactly that loop in \file{src/agent\_runtime/runtime.py}.
+\end{jargon}
 
-\subsection*{Why it exists (the project's own framing)}
-The project's README states its thesis directly: the agent loop itself is a small
-amount of code, but what makes an agent \emph{deployable} is everything around it ---
-knowing exactly what happened in a specific run, being able to reproduce that run,
-knowing whether the agent took an action (e.g.\ emailed a customer) before a human
-approved it, and knowing whether a new model version still passes the flows that used
-to work. The project's design response to all of this is a single idea, applied
-consistently: \textbf{every run is an append-only log of events, and every feature is
-a function computed from that log.}
+\subsection{Why it exists, in the project's own framing}
 
-\begin{defterm}{Event sourcing}
+The README states the thesis directly: the agent loop itself is a small amount of
+code, but what makes an agent \emph{deployable} is everything around it. Knowing
+exactly what happened in a specific run. Being able to reproduce that run. Knowing
+whether the agent emailed a customer before a human approved it. Knowing whether a new
+model version still passes the flows that used to work.
+
+The design response to all of this is a single idea, applied consistently:
+\textbf{every run is an append-only log of events, and every feature is a function
+computed from that log.}
+
+% ============================================================
+\section{Event sourcing, from first principles}
+% ============================================================
+
+Almost every program you have used stores \emph{current state}. A spreadsheet holds
+the value in each cell. When you change a cell, the old value is overwritten and gone.
+This is simple and it is what most software does.
+
+Event sourcing inverts that.
+
+\begin{jargon}{Event sourcing}
 A design pattern where, instead of storing ``the current state'' of something and
-overwriting it as things change, you store every state-changing event as an immutable,
-ordered record, and compute ``current state'' on demand by replaying those events from
-the start. Because the log never loses information, you can always recompute the past,
-replay it, or audit it. This project's central and only source of truth is such a log,
-one table row per event.
-\end{defterm}
+overwriting it as things change, you store every state-changing \emph{event} as an
+immutable, ordered record, and compute ``current state'' on demand by replaying those
+events from the start. The log never loses information, so you can always recompute
+the past, reproduce it, or audit it.
+\end{jargon}
+
+A bank account is the classic illustration. You could store one number, the balance,
+and overwrite it on every transaction. Or you could store the list of deposits and
+withdrawals, and compute the balance by adding them up. The second is slower to read
+and it uses more disk, and in exchange it can answer questions the first can never
+answer: what was my balance on the 3rd? Why is it this number? Which transaction was
+wrong? Undo that one thing without losing the rest.
+
+\begin{keyidea}{Why an AI agent in particular wants this}
+An agent's problems are exactly the problems the log solves.
+
+An agent is \emph{nondeterministic}: ask the same model the same question twice and
+you may get different answers. It is \emph{expensive}: every step costs money and
+seconds. It \emph{acts on the world}: it writes files and drafts emails, and those
+actions do not un-happen. And it is \emph{opaque}: when it does something strange, the
+only honest answer to ``why did it do that?'' is a complete record of what it saw and
+what it chose.
+
+Store only current state and you have none of that. You have a finished run, a
+changed workspace, and no way to answer any question about how you got there. Store
+the log and ``what happened'', ``do it again exactly'', ``continue from the crash'' and
+``did the new model change behavior'' all become the same kind of question: a function
+over a list of events.
+\end{keyidea}
+
+The rest of this document is, in a real sense, that one idea and its consequences.
+Every feature in Sections 7 through 15 is a function over the log.
 
 % ============================================================
 \section{Architecture at a glance}
 % ============================================================
 
-\begin{center}
-\begin{tikzpicture}[
-  box/.style={draw, rounded corners, fill=blue!6, minimum height=1cm, minimum width=2.6cm, align=center, font=\small},
-  core/.style={box, fill=accent!15, font=\small\bfseries},
-  store/.style={draw, fill=orange!12, minimum height=1.1cm, minimum width=3.6cm, align=center, font=\small\bfseries, rounded corners},
-  arr/.style={-{Stealth[length=2.3mm]}, thick},
-  node distance=1.05cm and 1.05cm
-]
-  \node[box] (cli) {CLI\\ \code{cli.py}};
-  \node[box, right=of cli] (web) {Web UI\\ \code{web/app.py}};
-  \node[box, right=of web] (scen) {Scenario runner\\ \code{scenarios/runner.py}};
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=1.05cm and 1.05cm]
+  \node[box] (cli) {CLI\\\code{cli.py}};
+  \node[box, right=of cli] (web) {Web UI\\\code{web/app.py}};
+  \node[box, right=of web] (scen) {Scenario runner\\\code{scenarios/runner.py}};
 
-  \node[core, below=1.4cm of web] (rt) {Runtime\\ (the agent loop)\\ \code{runtime.py}};
+  \node[box, fill=softgrey, draw=accent, very thick, below=1.5cm of web]
+    (rt) {\textbf{Runtime}\\the agent loop\\\code{runtime.py}};
 
-  \node[box, below left=1.3cm and -0.3cm of rt] (adapter) {ModelAdapter\\ mock / anthropic\\ / openai};
-  \node[box, below=1.3cm of rt] (exec) {ToolExecutor\\ + ToolRegistry};
-  \node[box, below right=1.3cm and -0.3cm of rt] (appr) {Approval policy\\ (auto / human)};
+  % Lay the three collaborators out from the centre one, so they cannot overlap.
+  \node[box, below=1.6cm of rt] (exec) {ToolExecutor\\+ ToolRegistry};
+  \node[box, left=0.9cm of exec] (adapter)
+    {ModelAdapter\\mock / anthropic\\/ openai};
+  \node[box, right=0.9cm of exec] (appr) {Approval policy\\auto / human};
 
-  \node[store, below=2.6cm of rt] (store) {EventStore (SQLite)\\ append-only \code{events} table\\ + idempotency ledger};
+  \node[store, below=3.7cm of rt, minimum width=5cm] (st)
+    {\textbf{EventStore} (SQLite)\\append-only \code{events} table\\+ idempotency ledger};
 
-  \node[box, right=1.6cm of store, fill=green!10] (proj) {Projection\\ log $\rightarrow$ RunState\\ \code{projection.py}};
+  \node[box, right=2.2cm of st, fill=white, draw=okgreen] (proj)
+    {Projection\\log $\rightarrow$ RunState\\\code{projection.py}};
 
-  \draw[arr] (cli) -- (rt);
-  \draw[arr] (web) -- (rt);
-  \draw[arr] (scen) -- (rt);
-  \draw[arr] (rt) -- (adapter);
-  \draw[arr] (rt) -- (exec);
-  \draw[arr] (rt) -- (appr);
-  \draw[arr] (adapter) -- (store);
-  \draw[arr] (exec) -- (store);
-  \draw[arr] (appr) -- (store);
-  \draw[arr] (rt) -- (store);
-  \draw[arr] (store) -- (proj);
-  \draw[arr] (proj.north) to[out=90,in=0] (rt.east);
+  \draw[flow] (cli) -- (rt);
+  \draw[flow] (web) -- (rt);
+  \draw[flow] (scen) -- (rt);
+  \draw[flow] (rt) -- (adapter);
+  \draw[flow] (rt) -- (exec);
+  \draw[flow] (rt) -- (appr);
+  \draw[flow] (adapter) -- (st);
+  \draw[flow] (exec) -- (st);
+  \draw[flow] (appr) -- (st);
+  % The runtime appends directly too. Route this around the left, so it does not
+  % strike through the ToolExecutor box on its way down.
+  \draw[flow] (rt.west) to[out=180, in=90] ($(adapter.north west)+(-0.8,0.25)$)
+    to[out=270, in=180] (st.west);
+  \draw[dflow] (st) -- (proj);
+  \draw[dflow] (proj.north) to[out=90,in=0] node[lbl,pos=0.6]{every decision\\re-derived} (rt.east);
 \end{tikzpicture}
-\end{center}
+}
+\caption{Solid arrows are appends; dashed arrows are reads through the projection.
+Nothing reads the store except through \code{project()}.}
+\end{figure}
 
-Every arrow into the SQLite store is an \emph{append}: the codebase contains no
-UPDATE or DELETE against the \code{events} table (confirmed by reading
-\code{store.py} in full --- the schema and every SQL statement in that file are
-\code{INSERT} or \code{SELECT}). Every arrow out of the store goes through
-\code{projection.py}, which is the \emph{only} module that interprets what a
-sequence of events means. The CLI, the web UI, the replay comparator and the
-scenario-test assertions all call the same \code{project()} function, so they
-cannot disagree about the state of a run.
+Every arrow into the SQLite store is an \emph{append}. The codebase contains no UPDATE
+and no DELETE against the \code{events} table: the schema and every SQL statement in
+\file{store.py} is an \code{INSERT} or a \code{SELECT}, confirmed by reading that file
+in full. Every arrow out of the store goes through \file{projection.py}, the only
+module that interprets what a sequence of events means. The CLI, the web UI, the
+replay comparator and the scenario assertions all call the same \code{project()}
+function, so they cannot disagree about the state of a run.
 
-\begin{defterm}{SQLite}
-A small, file-based relational database engine that needs no separate server process
---- the whole database is one file on disk. This project uses it as the single
-persistent store for every run's event log.
-\end{defterm}
+\begin{jargon}{SQLite}
+A small relational database engine that needs no separate server process: the whole
+database is one ordinary file on disk. This project uses it as the single persistent
+store for every run's event log, and separately as the storage behind the example
+calendar tool.
+\end{jargon}
 
 % ============================================================
-\section{The event log: the one idea everything is built on}
+\section{The event log}
 % ============================================================
 
-\subsection{The \code{events} table}
-From \code{store.py}, the schema actually created is:
+\subsection{The table}
+
+From \file{store.py}, the schema actually created is:
 
 \begin{lstlisting}[language=SQL]
-CREATE TABLE events (
+CREATE TABLE IF NOT EXISTS events (
     run_id  TEXT    NOT NULL,
     seq     INTEGER NOT NULL,
     type    TEXT    NOT NULL,
     ts      REAL    NOT NULL,
-    payload TEXT    NOT NULL,   -- JSON blob
+    payload TEXT    NOT NULL,   -- a JSON blob
     PRIMARY KEY (run_id, seq)
 );
-CREATE TABLE executions (          -- the idempotency ledger, see Sec. 6
+CREATE INDEX IF NOT EXISTS idx_events_type ON events (run_id, type);
+CREATE TABLE IF NOT EXISTS executions (      -- the idempotency ledger, Sec. 8
     idem_key TEXT PRIMARY KEY,
     run_id   TEXT NOT NULL,
     result   TEXT NOT NULL,
@@ -191,324 +207,697 @@ CREATE TABLE executions (          -- the idempotency ledger, see Sec. 6
 );
 \end{lstlisting}
 
-\begin{defterm}{Primary key / append-only}
-A \emph{primary key} is a column (or combination of columns) that must be unique per
-row and is used to look rows up quickly. Here the primary key is
-\code{(run\_id, seq)}: for a given run, each sequence number can be claimed only
-once. \code{EventStore.append()} reads \code{MAX(seq)+1} for the run, tries to
-insert, and retries (up to 5 times) if another writer raced it to the same number
---- this is what makes two processes appending to the same run safe without needing
-a lock: SQLite's uniqueness constraint on the primary key rejects the loser, who then
-just re-reads the new max and tries again.
-\end{defterm}
+\begin{jargon}{Primary key, and what append-only means here}
+A \emph{primary key} is a column or combination of columns that must be unique across
+rows. Here it is \code{(run\_id, seq)}: within one run, each sequence number can be
+claimed exactly once. \code{EventStore.append()} reads \code{MAX(seq)+1} for the run,
+tries to insert, and retries (up to 5 times) if another writer claimed that number
+first. SQLite's uniqueness constraint rejects the loser, who re-reads the new maximum
+and tries again. That is how two processes can append to one run safely without a
+lock.
+\end{jargon}
 
-\subsection{Event types}
-\code{events.py} defines twelve event type constants (grouped here in the order a
-typical successful run emits them):
+\subsection{The twelve event types}
+
+\file{events.py} defines twelve event type constants. Grouped in the order a typical
+successful run emits them:
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{3.6cm}p{9.8cm}@{}}
+\begin{tabular}{@{}p{4.1cm}p{9.6cm}@{}}
 \toprule
-\textbf{Event type} & \textbf{Payload highlights (from \code{projection.py} / \code{runtime.py})} \\
+\textbf{Event type} & \textbf{Payload highlights} \\
 \midrule
-\code{run\_created} & agent name, the user's request text, and free-form \code{meta} (workspace path, which adapter, scenario file if any) \\
-\code{model\_requested} & a call number, and a \emph{digest} (short hash) and count of the messages about to be sent --- not the messages themselves \\
+\code{run\_created} & agent name, the user's request text, and free-form \code{meta}: workspace path, which adapter, scenario file and behavior version if any \\
+\addlinespace[2pt]
+\code{model\_requested} & a call number, plus a \emph{digest} and count of the messages about to be sent, not the messages themselves \\
+\addlinespace[2pt]
 \code{model\_responded} & the parsed turn (text and/or tool calls), token usage, model name; or \code{malformed: true} with the raw unparseable text \\
-\code{model\_error} & a transport/provider failure for one attempt (e.g.\ simulated HTTP 500) \\
-\code{tool\_requested} & call id, tool name, arguments, and whether the tool is a side-effecting one \\
-\code{tool\_approved} / \code{tool\_denied} & who approved/denied, and the deny reason if any \\
-\code{tool\_executed} / \code{tool\_failed} & the tool's result or error, and how many attempts it took \\
-\code{checkpoint} & how many model calls and resolved tool calls have happened so far (a periodic marker, not needed for correctness --- see Sec.\ 4) \\
-\code{run\_finished} / \code{run\_failed} & the model's final answer text, or a machine-readable failure cause string \\
+\addlinespace[2pt]
+\code{model\_error} & a transport or provider failure for one attempt, such as an HTTP 500 \\
+\addlinespace[2pt]
+\code{tool\_requested} & call id, tool name, arguments, and whether the tool is side-effecting \\
+\addlinespace[2pt]
+\code{tool\_approved}\newline \code{tool\_denied} & who decided, and the deny reason if any \\
+\addlinespace[2pt]
+\code{tool\_executed}\newline \code{tool\_failed} & the tool's result or error, the attempt count, and a \code{replayed} flag \\
+\addlinespace[2pt]
+\code{checkpoint} & how many model calls and resolved tool calls have happened so far \\
+\addlinespace[2pt]
+\code{run\_finished}\newline \code{run\_failed} & the model's final answer text, or a machine-readable failure cause \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\begin{defterm}{Digest / hash}
-A short, fixed-length string computed from a larger piece of data such that the same
-input always produces the same digest, and different inputs almost never produce the
-same one. This project uses SHA-256 (a standard cryptographic hash function) truncated
-to 16 hex characters purely as a fingerprint of the outgoing message list --- it is
-not meant to be secret, just a compact ``was this the same request'' marker
-(\code{runtime.\_digest}).
-\end{defterm}
+\begin{jargon}{Digest, or hash}
+A short fixed-length string computed from a larger piece of data, such that the same
+input always gives the same digest and different inputs almost never collide. This
+project uses SHA-256 truncated to 16 hex characters purely as a fingerprint of the
+outgoing message list (\code{runtime.\_digest}). It is not a secret, just a compact
+``was this the same request'' marker. Storing the digest rather than the messages
+keeps the log small, and the messages are recoverable anyway: they are a pure function
+of the log (Section 6).
+\end{jargon}
+
+\subsection{A real log, end to end}
+
+This is not a sketch. It is the event sequence produced by actually running
+\code{agentrun run --scenario scenarios/ops\_assistant/chase\_overdue\_acme.yaml},
+approving the gated call, and reading the log back with \code{agentrun runs show}.
+
+\begin{figure}[H]
+\centering
+\resizebox{0.94\textwidth}{!}{
+\begin{tikzpicture}[node distance=0.34cm and 0,
+  ev/.style={rectangle, draw=inkblue, fill=softgrey, text=inkblue, align=left,
+             font=\scriptsize\ttfamily, minimum width=13cm, minimum height=0.5cm,
+             inner sep=4pt, rounded corners=2pt},
+  gate/.style={ev, fill=white, draw=warnred, text=warnred},
+  fin/.style={ev, fill=white, draw=okgreen, text=okgreen}]
+  \node[ev] (e0)  {seq 0 \ \ run\_created \ \ \ \ \ agent=ops\_assistant, request="Chase the overdue invoice..."};
+  \node[ev, below=of e0]  (e1)  {seq 1 \ \ model\_requested \ \ call\_number=1, messages\_digest=..., message\_count=2};
+  \node[ev, below=of e1]  (e2)  {seq 2 \ \ model\_responded \ \ tool\_calls=[read\_file(invoices.csv)], usage=\{simulated: true\}};
+  \node[ev, below=of e2]  (e3)  {seq 3 \ \ tool\_requested \ \ call\_id=call-1-0, tool=read\_file, side\_effect=false};
+  \node[ev, below=of e3]  (e4)  {seq 4 \ \ tool\_executed \ \ \ result=\{invoice rows\}, attempts=1, replayed=false};
+  \node[ev, below=of e4]  (e5)  {seq 5 \ \ checkpoint \ \ \ \ \ \ model\_calls=1, calls\_resolved=1};
+  \node[ev, below=of e5]  (e6)  {seq 6 \ \ model\_requested \ \ call\_number=2};
+  \node[ev, below=of e6]  (e7)  {seq 7 \ \ model\_responded \ \ tool\_calls=[draft\_email(to=billing@acme.example, ...)]};
+  \node[gate, below=of e7](e8)  {seq 8 \ \ tool\_requested \ \ call\_id=call-2-0, tool=draft\_email, side\_effect=TRUE};
+  \node[gate, below=of e8](e9)  {seq 9 \ \ tool\_approved \ \ \ call\_id=call-2-0, approver=cli \ \ <- the gate (Sec. 7)};
+  \node[ev, below=of e9]  (e10) {seq 10 \ tool\_executed \ \ \ result=\{draft\_path: outbox/Overdue\_invoice\_INV-1001.eml\}};
+  \node[ev, below=of e10] (e11) {seq 11 \ checkpoint \ \ \ \ \ \ model\_calls=2, calls\_resolved=2};
+  \node[ev, below=of e11] (e12) {seq 12 \ model\_requested \ \ call\_number=3};
+  \node[ev, below=of e12] (e13) {seq 13 \ model\_responded \ \ final text, no tool calls};
+  \node[fin, below=of e13](e14) {seq 14 \ run\_finished \ \ \ \ final\_answer="Drafted a reminder email to Acme Corp..."};
+
+  \draw[decorate, decoration={brace, amplitude=5pt}, draw=warnred, thick]
+    ($(e9.north east)+(0.2,0.05)$) -- ($(e8.south east)+(0.2,-0.05)$)
+    node[midway, right=7pt, align=left, font=\scriptsize\itshape, text=warnred]
+    {the run stopped here\\until a human approved};
+\end{tikzpicture}
+}
+\caption{The 15 events of run \code{5eae35be7bc7}, verified by running it. Without an
+auto-approve policy the loop returns \code{waiting\_approval} after seq 8, and seq 9
+is written later by \code{agentrun approvals approve}. Events 10 to 14 are identical
+either way, because they are computed from the log, not from which code path produced
+the approval.}
+\end{figure}
 
 \subsection{Canonical encoding, for exact comparison}
+
 Every \code{Event} has a \code{canonical()} method that JSON-encodes it with sorted
-keys and no extra whitespace:
+keys and no whitespace:
+
 \begin{lstlisting}[language=Python]
 json.dumps(body, sort_keys=True, separators=(",", ":"))
 \end{lstlisting}
-Two events that mean the same thing always produce the exact same string. This is
-what lets \emph{replay} (Sec.\ 7) claim ``byte-identical'' rather than
-``looks about right.''
+
+Two events that mean the same thing always produce the exact same string. This is what
+lets replay (Section 9) claim ``byte-identical'' rather than ``looks about right''.
+Note what \code{canonical()} excludes by default: the \code{run\_id}. A replayed run
+has a different id by construction, so comparing logs would fail immediately if the id
+were included. Everything else, including the timestamp, must match exactly.
 
 % ============================================================
-\section{The agent loop: \code{Runtime.drive()}}
+\section{The loop: \code{Runtime.drive()}}
 % ============================================================
 
-\code{runtime.py}'s \code{Runtime} class is the heart of the project. Its
-\code{drive(run\_id)} method is, in the project's own words, ``a fixed-point
-iteration over the log'': it keeps re-deriving what to do next purely from the
-current event log, until the run reaches a terminal state.
+\file{runtime.py} is the heart of the project, and \code{drive(run\_id)} is, in the
+project's own words, ``a fixed point iteration over the log''.
 
-\begin{defterm}{Fixed-point iteration}
+\begin{jargon}{Fixed point iteration}
 A loop that repeatedly applies the same rule to its own output until the output stops
-changing (or a stated exit condition is hit). Here, ``derive the current state from
-the log, decide the single next thing to do, append it, repeat'' is applied
-identically whether this is the very first iteration of a brand-new run, the
-continuation of a run just approved by a human, or the resumption of a run that
-crashed a minute ago. There is exactly one code path, not three.
-\end{defterm}
+changing or a stated exit condition is hit. Here the rule is: derive the current state
+from the log, decide the single next thing to do, append it, repeat. It is applied
+identically whether this is the first iteration of a brand new run, the continuation
+of a run a human just approved, or the resumption of a run that crashed a minute ago.
+There is one code path, not three.
+\end{jargon}
 
-\begin{center}
-\begin{tikzpicture}[
-  node distance=0.55cm and 1.2cm,
-  d/.style={draw, diamond, aspect=2.4, fill=yellow!12, align=center, font=\small, inner sep=2pt},
-  s/.style={draw, rounded corners, fill=blue!6, align=center, font=\small, minimum width=4.2cm},
-  t/.style={draw, rounded corners, fill=green!12, align=center, font=\small, minimum width=3.6cm},
-  arr/.style={-{Stealth[length=2.2mm]}, thick}
-]
-  \node[s] (start) {project the log $\rightarrow$ RunState};
-  \node[d, below=of start] (terminal) {status is\\finished / failed?};
-  \node[t, right=2.4cm of terminal] (stop1) {return: run is done};
-  \node[s, below=of terminal] (resolve) {resolve unfinished tool calls\\ in request order (Sec.\,5)};
-  \node[d, below=of resolve] (paused) {a side-effecting call\\ has no decision yet?};
-  \node[t, right=2.4cm of paused] (stop2) {return: \code{waiting\_approval}};
-  \node[d, below=of paused] (limit) {model-call limit\\ reached?};
-  \node[t, right=2.4cm of limit] (stop3) {append \code{run\_failed}\\ (cause: \code{model\_call\_limit})};
-  \node[s, below=of limit] (checkpoint) {append \code{checkpoint}};
-  \node[s, below=of checkpoint] (model) {ask the adapter for the next turn\\ (Sec.\,4.2), append what happened};
-  \node[d, below=of model] (final) {model gave a\\ final answer?};
-  \node[t, right=2.4cm of final] (stop4) {append \code{run\_finished}, return};
+\begin{figure}[H]
+\centering
+\resizebox{0.86\textwidth}{!}{
+\begin{tikzpicture}[node distance=0.6cm and 1.6cm]
+  \node[box, minimum width=5cm] (start) {project the log $\rightarrow$ RunState};
+  \node[dec, below=of start] (terminal) {status\\terminal?};
+  \node[box, fill=white, draw=okgreen, right=of terminal] (stop1) {return: run is done};
+  \node[box, minimum width=5cm, below=of terminal] (resolve)
+    {resolve unfinished tool calls\\in request order (Sec. 7)};
+  \node[dec, below=of resolve] (paused) {side-effecting call\\undecided?};
+  \node[box, fill=white, draw=warnred, right=of paused] (stop2)
+    {return:\\\code{waiting\_approval}};
+  \node[dec, below=of paused] (limit) {model-call\\limit hit?};
+  \node[box, fill=white, draw=warnred, right=of limit] (stop3)
+    {append \code{run\_failed}\\cause=\code{model\_call\_limit}};
+  \node[box, minimum width=5cm, below=of limit] (checkpoint) {append \code{checkpoint}};
+  \node[box, minimum width=5cm, below=of checkpoint] (model)
+    {append \code{model\_requested},\\ask the adapter, append the outcome};
+  \node[dec, below=of model] (final) {final answer?};
+  \node[box, fill=white, draw=okgreen, right=of final] (stop4)
+    {append \code{run\_finished},\\return};
 
-  \draw[arr] (start) -- (terminal);
-  \draw[arr] (terminal) -- node[right,font=\scriptsize]{yes} (stop1);
-  \draw[arr] (terminal) -- node[left,font=\scriptsize]{no} (resolve);
-  \draw[arr] (resolve) -- (paused);
-  \draw[arr] (paused) -- node[right,font=\scriptsize]{yes} (stop2);
-  \draw[arr] (paused) -- node[left,font=\scriptsize]{no} (limit);
-  \draw[arr] (limit) -- node[right,font=\scriptsize]{yes} (stop3);
-  \draw[arr] (limit) -- node[left,font=\scriptsize]{no} (checkpoint);
-  \draw[arr] (checkpoint) -- (model);
-  \draw[arr] (model) -- (final);
-  \draw[arr] (final) -- node[right,font=\scriptsize]{yes} (stop4);
-  \draw[arr] (final) |- node[near start,left,font=\scriptsize]{no, loop} ($(start.west)+(-0.9,0)$) -- (start.west);
+  \draw[flow] (start) -- (terminal);
+  \draw[flow] (terminal) -- node[lbl]{yes} (stop1);
+  \draw[flow] (terminal) -- node[lbl]{no} (resolve);
+  \draw[flow] (resolve) -- (paused);
+  \draw[flow] (paused) -- node[lbl]{yes} (stop2);
+  \draw[flow] (paused) -- node[lbl]{no} (limit);
+  \draw[flow] (limit) -- node[lbl]{yes} (stop3);
+  \draw[flow] (limit) -- node[lbl]{no} (checkpoint);
+  \draw[flow] (checkpoint) -- (model);
+  \draw[flow] (model) -- (final);
+  \draw[flow] (final) -- node[lbl]{yes} (stop4);
+  \draw[flow] (final.west) -- node[lbl, pos=0.75]{no: loop} ($(final.west)+(-1.5,0)$)
+    |- (start.west);
 \end{tikzpicture}
-\end{center}
+}
+\caption{\code{Runtime.drive()}. Every exit is an append; every entry re-reads the log.}
+\end{figure}
 
-\subsection{Resolving tool calls (step ``resolve unfinished tool calls'')}
-\code{RunState.unfinished\_calls()} returns every requested tool call that is still
-\code{requested} or \code{approved} (i.e.\ not yet executed/denied/failed), in the
-order they were requested. For each:
-\begin{itemize}[nosep]
-  \item If it is \textbf{not} a side-effecting call, or it was already approved, it
-  executes immediately (Sec.\,6).
-  \item If it \textbf{is} side-effecting and undecided, the \emph{approval policy}
-  (a plain function taking the call and returning approve/deny/\code{None}) is
-  consulted. \code{None} means ``ask a human'' --- the loop returns
-  \code{waiting\_approval} right there, without touching later calls.
-\end{itemize}
+\subsection{Asking the model}
 
-\begin{defterm}{Side effect}
-An action with a lasting, observable consequence outside the running program ---
-writing a file, updating a spreadsheet, adding a calendar entry, drafting an email.
-Contrast with a \emph{read-only} action (reading a file, listing a directory), which
-can be safely retried or re-run because it changes nothing. Every tool in this
-project declares a boolean \code{side\_effect} flag (\code{tools/registry.py}); only
-side-effecting tools are gated behind human approval.
-\end{defterm}
-
-\subsection{Asking the model (step ``ask the adapter'')}
 \code{\_model\_step()} rebuilds the conversation from the log via
-\code{build\_messages()} (Sec.\,5), appends \code{model\_requested}, then calls
+\code{build\_messages()} (Section 6), appends \code{model\_requested}, then calls
 \code{adapter.complete(messages, tool\_specs)}. Three outcomes are handled:
-\begin{enumerate}[nosep]
-  \item \textbf{Transport/provider failure} (\code{AdapterError}): appends
-  \code{model\_error} and, if retries remain (default 2), sleeps
-  \code{0.5s $\times 2^{\text{attempt}}$} (exponential backoff) before retrying.
-  If retries are exhausted, appends \code{run\_failed} with cause
-  \code{adapter\_error: retries exhausted}.
-  \item \textbf{Unparseable output} (\code{MalformedOutputError}): appends
-  \code{model\_responded} with \code{malformed: true} and the raw text. If this is
-  more than \code{max\_malformed} (default 2) malformed responses total for the run,
-  the run fails with cause \code{malformed\_model\_output: \dots}; otherwise the loop
-  returns \code{False} (not done) and the next iteration's \code{build\_messages()}
-  will include a corrective message telling the model to try again (Sec.\,5).
-  \item \textbf{A parsed turn}: appended as \code{model\_responded}. If the turn has
-  no tool calls (\code{ModelTurn.is\_final}), it is the final answer and
-  \code{run\_finished} is appended. Otherwise, every requested tool call becomes a
-  \code{tool\_requested} event, tagging each with whether it is side-effecting
-  (looked up from the tool registry).
+
+\begin{enumerate}
+  \item \textbf{Transport or provider failure} (\code{AdapterError}): append
+  \code{model\_error} and, if retries remain (default 2), sleep
+  $0.5 \times 2^{\mathrm{attempt}}$ seconds before retrying. If retries are exhausted,
+  append \code{run\_failed} with cause \code{adapter\_error: retries exhausted}.
+  \item \textbf{Unparseable output} (\code{MalformedOutputError}): append
+  \code{model\_responded} with \code{malformed: true} and the raw text, truncated to
+  2000 characters. If this is more than \code{max\_malformed} (default 2) malformed
+  responses in the run, fail the run with cause \code{malformed\_model\_output}.
+  Otherwise return, so the next iteration feeds a corrective message back.
+  \item \textbf{A parsed turn}: append \code{model\_responded}. If the turn has no tool
+  calls (\code{ModelTurn.is\_final}), it is the final answer and \code{run\_finished}
+  is appended. Otherwise each requested tool call becomes a \code{tool\_requested}
+  event, tagged with whether that tool is side-effecting, looked up from the registry.
 \end{enumerate}
 
-\begin{defterm}{Exponential backoff}
-A retry strategy where each successive retry waits longer than the last (here,
-doubling: 0.5s, 1s, 2s, \dots), so a struggling remote service is not immediately
-hit again at full speed.
-\end{defterm}
+\begin{jargon}{Exponential backoff}
+A retry strategy where each successive retry waits longer than the last (here
+doubling: 0.5s, then 1s, then 2s), so a struggling remote service is not immediately
+hammered again at full speed.
+\end{jargon}
 
 \subsection{Checkpoints}
-Before each model call (except the very first), the loop appends a \code{checkpoint}
-event recording how many model calls and resolved tool calls have happened.
-Read literally in the code, a checkpoint is \emph{not} required for the loop's
-correctness --- everything can already be recomputed from the rest of the log --- it
-exists as a cheap, explicit marker of progress useful for a human skimming
-\code{agentrun runs show}.
+
+Before each model call except the first, the loop appends a \code{checkpoint}
+recording how many model calls and resolved tool calls have happened. Read literally,
+a checkpoint is \emph{not} required for correctness: every number in it is already
+recomputable from the rest of the log. It is a cheap progress marker for a human
+skimming \code{agentrun runs show}.
+
+\begin{honest}{The checkpoint is a missed opportunity, and the README says so obliquely}
+The README's own ``what I'd do differently'' says resume should record ``the adapter
+cursor in a checkpoint payload instead of inferring it''. The \code{checkpoint} event
+is already being written on every iteration and already carries two counters that are
+pure functions of the log, which is to say it carries nothing that is not already
+known. The one number that is \emph{not} recoverable from the log, the mock adapter's
+script position, is the one it does not record. Section 18 shows this is not
+hypothetical: it is a live off-by-one bug.
+\end{honest}
 
 % ============================================================
-\section{Rebuilding a conversation from the log}
+\section{Rebuilding the conversation from the log}
 % ============================================================
 
-\code{projection.build\_messages(state, system\_prompt)} in \code{projection.py}
-turns the event log into the list of messages a model API expects: a system prompt,
-the user's original request, then one message per subsequent turn or observation ---
-walking the log in order and translating:
+\code{projection.build\_messages(state, system\_prompt)} turns the log into the
+message list a model API expects. It walks the log in order and translates:
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{4.2cm}p{9.2cm}@{}}
+\begin{tabular}{@{}p{4.4cm}p{9.3cm}@{}}
 \toprule
 \textbf{Log event} & \textbf{Message produced} \\
 \midrule
 \code{model\_responded} (normal) & an \code{assistant} message: the turn's text, plus \code{tool\_calls} if any \\
-\code{model\_responded} (malformed) & a \code{user} message: ``Your previous output could not be parsed. Reply with either tool calls or a final answer.'' --- this is the corrective nudge mentioned in Sec.\,4.2 \\
+\code{model\_responded} (malformed) & a \code{user} message: ``Your previous output could not be parsed. Reply with either tool calls or a final answer.'' This is the corrective nudge from Section 5.2 \\
 \code{tool\_executed} & a \code{tool} message carrying the result \\
-\code{tool\_failed} & a \code{tool} message: \code{\{"error": \dots\}} \\
-\code{tool\_denied} & a \code{tool} message: \code{\{"denied": true, "reason": \dots\}} --- this is literally how ``the operator said no'' becomes something the model can react to \\
+\code{tool\_failed} & a \code{tool} message: \code{\{"error": ...\}} \\
+\code{tool\_denied} & a \code{tool} message: \code{\{"denied": true, "reason": ...\}} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Because this is a pure function of the log, a run resumed after a crash sends the
-model \emph{exactly} the same messages an uninterrupted run would have sent at that
-point --- there is no separate ``resume state'' to keep in sync.
+The last row is worth pausing on. It is literally how ``the operator said no'' becomes
+something the model can react to. A denial is not an exception and not a stop; it is an
+observation, in the same channel a tool result would arrive on. The model reads it and
+chooses what to do next, exactly as it would after any other tool outcome.
 
-Each concrete adapter (Sec.\,8) then translates this provider-neutral list into the
-wire format its specific API expects (Anthropic content blocks, or OpenAI chat
-messages with a \code{tool\_call\_id}).
+Because this is a pure function of the log, a run resumed after a crash sends the model
+exactly the messages an uninterrupted run would have sent. There is no separate
+``resume state'' to keep in sync, because there is no state at all.
+
+% ============================================================
+\section{The approval gate}
+% ============================================================
+
+\begin{jargon}{Side effect}
+An action with a lasting, observable consequence outside the running program: writing
+a file, updating a spreadsheet, adding a calendar entry, drafting an email. Contrast a
+\emph{read-only} action (reading a file, listing a directory), which can be safely
+retried because it changes nothing. Every tool in this project declares a boolean
+\code{side\_effect} flag; only side-effecting tools are gated.
+\end{jargon}
+
+\code{RunState.unfinished\_calls()} returns every requested tool call still
+\code{requested} or \code{approved}, in request order. \code{\_process\_tool\_calls()}
+walks them:
+
+\begin{figure}[H]
+\centering
+% Laid out vertically on purpose: the horizontal version had to be shrunk so far to
+% fit the text width that the labels stopped being readable.
+\begin{tikzpicture}[node distance=0.95cm and 0.7cm]
+  \node[box, minimum width=4cm] (call) {next unfinished tool call};
+  \node[dec, below=of call] (se) {\code{side\_effect}\\true?};
+  \node[dec, below=1.15cm of se] (dec2) {already\\approved?};
+  \node[dec, below=1.15cm of dec2] (pol) {approval policy\\returns?};
+
+  \node[box, minimum width=3.2cm, right=2.6cm of se, draw=okgreen] (exec1)
+    {execute now};
+
+  \node[box, below=1.3cm of pol, draw=okgreen, minimum width=3.4cm] (app)
+    {append \code{tool\_approved},\\then execute};
+  \node[box, left=of app, draw=warnred, minimum width=3.4cm] (wait)
+    {pause the run:\\\code{waiting\_approval}};
+  \node[box, right=of app, draw=warnred, minimum width=3.4cm] (den)
+    {append \code{tool\_denied}\\no execution;\\the model is told};
+
+  \draw[flow] (call) -- (se);
+  \draw[flow] (se) -- node[lbl, pos=0.45]{no, read-only} (exec1);
+  \draw[flow] (se) -- node[lbl]{yes} (dec2);
+  \draw[flow] (dec2) -| node[lbl, pos=0.25]{yes} (exec1);
+  \draw[flow] (dec2) -- node[lbl]{no} (pol);
+  \draw[flow] (pol.south) -- node[lbl, pos=0.55]{approve} (app.north);
+  \draw[flow] (pol.west) -| node[lbl, pos=0.25]{\code{None}} (wait.north);
+  \draw[flow] (pol.east) -| node[lbl, pos=0.25]{deny} (den.north);
+\end{tikzpicture}
+\caption{The gate. A read-only call never reaches the policy. \code{None} is the
+interesting return: it means ``a human must decide'', and the loop returns immediately
+without touching any later call.}
+\end{figure}
+
+An \emph{approval policy} is just a function from a tool call to one of three answers:
+\code{("approve", who)}, \code{("deny", who, reason)}, or \code{None} meaning ask a
+human. That is the whole abstraction. The CLI's \code{--auto-approve} passes a function
+returning approve; the default passes no policy at all, which pauses; a scenario can
+pass one that denies specific tools by name.
+
+\begin{keyidea}{The gate is safe because of ordering, not because of a lock}
+The pause is not a thread blocking on a condition variable, and there is no in-memory
+``pending approvals'' queue. The run simply stops and the process can exit. The pending
+approval exists only as a fact about the log: a \code{tool\_requested} event with
+\code{side\_effect: true} and no matching decision event after it. Any process, minutes
+or days later, can read the log and see it. That is why the CLI and the web UI can both
+serve the same approval queue without sharing anything but the database file.
+\end{keyidea}
+
+\code{approve\_call()} and \code{deny\_call()} in \file{runtime.py} are the out-of-band
+entry points the CLI and web UI use. Both call \code{\_assert\_pending()} first, which
+re-projects the log and raises \code{ValueError} unless the call really is pending, so
+approving the same call twice, or approving a call that was already denied, is rejected
+rather than silently appending a contradictory event.
 
 % ============================================================
 \section{Idempotency and the crash window}
 % ============================================================
 
-\begin{defterm}{Idempotency}
+\begin{jargon}{Idempotency}
 An operation is \emph{idempotent} if doing it twice has the same effect as doing it
-once. Re-reading a file is naturally idempotent. Sending a reminder email is not ---
+once. Re-reading a file is naturally idempotent. Sending a reminder email is not:
 sending it twice annoys the customer twice. This project makes tool execution
-idempotent \emph{per run} by remembering that it already ran, so a retried/resumed
-run does not repeat it.
-\end{defterm}
+idempotent \emph{per run} by remembering that it already ran.
+\end{jargon}
 
-\code{tools/executor.py}'s \code{ToolExecutor.execute()} derives a key from
-\code{(run\_id, seq of the tool\_requested event)}:
+\code{ToolExecutor.execute()} derives a key from \code{(run\_id, seq of the
+tool\_requested event)}:
+
 \begin{lstlisting}[language=Python]
 def idempotency_key(run_id, requested_seq):
     return hashlib.sha256(f"{run_id}:{requested_seq}".encode()).hexdigest()[:32]
 \end{lstlisting}
-Both inputs are identical whether this is the first attempt or a resume after crash,
-so the key is stable. The write order is deliberate:
 
-\begin{center}
-\begin{tikzpicture}[
-  node distance=0.5cm and 0.4cm,
-  s/.style={draw, rounded corners, fill=blue!6, align=center, font=\small, minimum width=5.6cm, minimum height=0.85cm},
-  arr/.style={-{Stealth[length=2.2mm]}, thick}
-]
-  \node[s] (h) {1. run the tool handler};
-  \node[s, below=of h] (l) {2. \code{claim\_execution()}: \code{INSERT OR IGNORE}\\ into the \code{executions} ledger};
-  \node[s, below=of l] (a) {3. runtime appends \code{tool\_executed}};
-  \draw[arr] (h) -- (l);
-  \draw[arr] (l) -- (a);
-  \draw[decorate, decoration={brace, amplitude=6pt}, thick, red!60!black]
-    ($(l.north west)+(-0.3,0.15)$) -- ($(l.south west)+(-0.3,-0.15)$)
-    node[midway, left=8pt, align=center, font=\small, color=red!60!black]
-    {the crash\\ window};
+Both inputs are identical whether this is the first attempt or a resume after a crash,
+so the key is stable. That is the whole trick, and it is why the key is derived from
+the log rather than generated: a generated id would be lost in the crash it is meant to
+survive.
+
+The write order is deliberate:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.55cm and 0.4cm]
+  \node[box, minimum width=7cm] (h) {1. run the tool handler\\\emph{the side effect happens here}};
+  \node[box, minimum width=7cm, below=of h] (l)
+    {2. \code{claim\_execution()}: \code{INSERT OR IGNORE}\\into the \code{executions} ledger};
+  \node[box, minimum width=7cm, below=of l] (a)
+    {3. the runtime appends \code{tool\_executed}};
+  \draw[flow] (h) -- (l);
+  \draw[flow] (l) -- (a);
+  \draw[decorate, decoration={brace, amplitude=6pt}, thick, draw=okgreen]
+    ($(a.north east)+(0.25,0.1)$) -- ($(l.south east)+(0.25,-0.1)$)
+    node[midway, right=8pt, align=left, font=\small, text=okgreen]
+    {\textbf{closed} window:\\resume finds the ledger\\entry and does not re-run};
+  \draw[decorate, decoration={brace, amplitude=6pt}, thick, draw=warnred]
+    ($(l.north west)+(-0.25,0.1)$) -- ($(h.south west)+(-0.25,-0.1)$)
+    node[midway, left=8pt, align=right, font=\small, text=warnred]
+    {\textbf{open} window:\\side effect done,\\nothing recorded};
 \end{tikzpicture}
-\end{center}
+\caption{The execution order in \file{tools/executor.py}, and the two windows it
+creates. Only the lower one is closed.}
+\end{figure}
 
-If the process dies between step 2 and step 3 --- the worst possible instant, after
-the real-world side effect already happened but before the log says so --- a
-subsequent resume calls \code{execute()} again with the \emph{same} key, finds a
-row already in the \code{executions} ledger (via \code{get\_execution()}), and
-returns that recorded result immediately without touching the handler again. The
-runtime then appends \code{tool\_executed} with an extra \code{replayed: true} flag,
-so the log itself records that this particular execution didn't actually re-run.
-\code{tests/test\_resume.py} exercises exactly this crash point (via a small executor
-wrapper that raises \emph{after} the handler has run but before the ledger write
-would normally be reached) and asserts a side-effect counter --- e.g.\ number of
-\code{.eml} draft files written --- stays at 1.
+If the process dies between step 2 and step 3, a subsequent resume calls
+\code{execute()} again with the same key, finds the row already in the ledger via
+\code{get\_execution()}, and returns that recorded result without touching the handler.
+The runtime then appends \code{tool\_executed} with \code{replayed: true}, so the log
+records that this execution did not actually re-run. \file{tests/test\_resume.py}
+exercises exactly this and asserts a side-effect counter stays at 1.
 
-The README calls out one honest limitation here: because
-\code{concurrent.futures} timeouts (Sec.\,9) abandon a worker thread rather than
-kill it, a genuinely hung tool leaks a thread per retried attempt; this is
-documented as a known gap, not silently hidden.
+\begin{honest}{The window between the handler and the ledger is open, and untested}
+The README says: ``A crash between `handler ran' and `tool\_executed appended' is where
+resume would naively re-execute. The executor writes the result to an \code{INSERT OR
+IGNORE} ledger \dots before the runtime appends the event.'' That is true, and it
+closes most of the window. It does not close all of it.
+
+Read \code{ToolExecutor.execute()} closely. The handler returns, and the ledger write
+happens on the very next line:
+
+\begin{lstlisting}[language=Python]
+result = self._run_with_timeout(spec, args)   # the side effect happens here
+self.store.claim_execution(key, run_id, result)   # ... and is recorded here
+\end{lstlisting}
+
+A crash between those two statements leaves the side effect done and nothing at all
+recorded, and a resumed run will run the handler a second time. The email goes out
+twice.
+
+The test does not cover this. \code{CrashAfterExecute} in \file{tests/test\_resume.py}
+wraps the executor and raises \emph{after calling \code{self.inner.execute(...)} in
+full}, which includes the ledger write. So the test crashes in the closed window, which
+is why the assertion passes. Its docstring calls it ``the worst possible crash point
+for duplicate side effects'', and that is the one thing it is not: the genuinely worst
+point is one line earlier, inside \code{execute()}, and nothing tests it.
+
+This is defensible, and worth being able to defend precisely rather than deny. The gap
+is inherent: you cannot atomically perform a real-world side effect and a local
+database write, and no amount of reordering fixes that. Shrinking the window is the
+best a local ledger can do. Genuinely closing it requires the side effect itself to
+carry the idempotency key so that the \emph{remote} system deduplicates, which is what
+payment APIs do with an \code{Idempotency-Key} header. The honest claim is ``the
+duplicate window is reduced from the whole tool execution to two adjacent statements'',
+not ``no duplicate side effects''.
+\end{honest}
+
+The executor also distinguishes two kinds of failure, which buys the retry policy for
+free:
+
+\begin{itemize}
+  \item \code{ToolError} is an \emph{expected}, deterministic refusal: a path outside
+  the sandbox, a host not on the allowlist, a missing file, a cell out of range.
+  Retrying cannot help, so it fails immediately.
+  \item \code{ToolTimeout} (a subclass of \code{ToolError}, caught first) and any other
+  exception are treated as transient and consume the retry budget with backoff.
+\end{itemize}
+
+\begin{honest}{Tool timeouts do not stop the tool (the README states this one)}
+\code{\_run\_with\_timeout} submits the handler to a one-worker
+\code{ThreadPoolExecutor} and calls \code{future.result(timeout=...)}. When that times
+out the code calls \code{future.cancel()}, which for an \emph{already running} task
+returns \code{False} and does nothing: Python cannot kill a running thread. The handler
+keeps running to completion in the background, invisible.
+
+Three consequences the README names two of. A genuinely hung tool leaks a thread per
+attempt. A timed-out side-effecting tool may still complete its side effect after the
+runtime has recorded it as failed. And, not in the README: the
+\code{with ... ThreadPoolExecutor} block cannot exit until the abandoned worker
+finishes, because \code{\_\_exit\_\_} calls \code{shutdown(wait=True)}, so a hung tool
+hangs \code{execute()} itself rather than returning after \code{spec.timeout}. The
+timeout is honest about ``how long do I wait for an answer'' only when the tool
+eventually returns. Subprocess isolation is the real fix, and the README says so.
+\end{honest}
 
 % ============================================================
 \section{Deterministic replay}
 % ============================================================
 
-\begin{defterm}{Replay}
-Re-executing a program's logic using only what was recorded about a previous
-execution, with no live external calls, and checking that the result matches what
-was recorded. This project's replay does not call any model, run any real tool
-handler, or touch the network; every input the loop would normally fetch live
-(the next model turn, a tool's outcome, an approval decision, even the wall-clock
-time) is instead served from the four ``recorded stand-ins'' below.
-\end{defterm}
+\subsection{What deterministic replay means, and why an agent needs it}
 
-\code{replay.py}'s \code{replay\_run()} builds four objects, each substituting for a
-real dependency, all reading from the same source event list:
+\begin{jargon}{Deterministic}
+A process is \emph{deterministic} if the same inputs always produce the same outputs.
+Adding two numbers is deterministic. Reading the clock is not. Asking an LLM a question
+is emphatically not.
+\end{jargon}
+
+\begin{jargon}{Deterministic replay}
+Re-executing a program's logic using only what was recorded about a previous execution,
+with no live external calls, and checking that the result matches what was recorded.
+Every input the program would normally fetch from the outside world (the next model
+turn, a tool's result, a human's decision, the wall clock) is served instead from the
+recording.
+\end{jargon}
+
+Here is why this matters more for an agent than for ordinary software. Suppose run 4187
+drafted an email to the wrong customer, and you want to know why.
+
+You cannot just run it again. The model is nondeterministic, so the second run may
+behave perfectly and tell you nothing. It costs money each time you try. And running it
+again would draft \emph{another} email, so your debugging tool has side effects. The
+usual approach of ``add a print statement and re-run'' is unavailable on all three
+counts.
+
+Replay dissolves the problem. The log already contains every nondeterministic input the
+run received. Feed those recorded inputs back into the same loop and the run is now a
+pure function: it must produce the same events, every time, for free, with no email
+sent. You can step through it, and you can do it a year later.
+
+\begin{keyidea}{Determinism is a budget you spend field by field}
+The reason replay works here is not a clever replay engine. It is that every event
+payload was designed so replay can recompute it. Any value that is not a pure function
+of the log is a future divergence: a wall clock reading, a random id, an attempt count
+that depends on real sleeps, a ``request sent at'' timestamp.
+
+So the store takes an injectable clock, sleeps are injectable and become no-ops under
+replay, and \code{model\_requested} records a \emph{digest} of the messages rather than
+anything time-dependent. Each of those is a small design concession made specifically to
+keep replay exact. The comparator can then demand byte equality instead of some fuzzy
+``close enough'' match, which is the difference between a real regression tripwire and a
+test that nobody trusts.
+\end{keyidea}
+
+\subsection{The four stand-ins}
+
+\code{replay\_run()} builds four objects, each substituting for a real dependency, all
+reading from the same source event list:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.75cm and 1.5cm]
+  \node[store, minimum width=2.6cm] (src) {the original\\event log\\(read only)};
+
+  \node[extbox, right=2.1cm of src, yshift=2.4cm] (clock)
+    {\code{\_RecordedClock}\\replaces \code{time.time}};
+  \node[extbox, right=2.1cm of src, yshift=0.8cm] (adapt)
+    {\code{\_RecordedAdapter}\\replaces the live model};
+  \node[extbox, right=2.1cm of src, yshift=-0.8cm] (exe)
+    {\code{\_RecordedExecutor}\\replaces tool handlers};
+  \node[extbox, right=2.1cm of src, yshift=-2.4cm] (appr)
+    {\code{\_RecordedApprovals}\\replaces the human};
+
+  \node[box, fill=softgrey, draw=accent, very thick, right=2.1cm of exe, yshift=0.8cm,
+        align=center] (rt) {the \textbf{real},\\unmodified\\\code{Runtime.drive()}};
+
+  \node[store, below=1.5cm of rt, minimum width=2.8cm] (out)
+    {a new run:\\\code{<id>-replay-<rnd>}};
+
+  \draw[dflow] (src.east) to[out=0,in=180] (clock.west);
+  \draw[dflow] (src.east) to[out=0,in=180] (adapt.west);
+  \draw[dflow] (src.east) to[out=0,in=180] (exe.west);
+  \draw[dflow] (src.east) to[out=0,in=180] (appr.west);
+
+  \draw[flow] (clock.east) to[out=0,in=180] (rt.west);
+  \draw[flow] (adapt.east) to[out=0,in=180] (rt.west);
+  \draw[flow] (exe.east) to[out=0,in=180] (rt.west);
+  \draw[flow] (appr.east) to[out=0,in=180] (rt.west);
+
+  \draw[flow] (rt) -- node[lbl]{appends} (out);
+
+  % The comparator sits below, fed by both logs.
+  \node[dec, below=1.5cm of src, aspect=2.2, xshift=1.2cm] (cmp)
+    {canonical logs\\equal?};
+  \node[box, draw=okgreen, below=1.0cm of cmp, xshift=-1.9cm, minimum width=3cm]
+    (yes) {byte-identical: yes};
+  \node[box, draw=warnred, below=1.0cm of cmp, xshift=2.1cm, minimum width=3cm]
+    (no) {first divergence\\at seq N};
+
+  \draw[dflow] (src.south) -- node[lbl, pos=0.6]{original} (cmp.north);
+  \draw[dflow] (out.west) -- node[lbl, pos=0.5]{replayed} (cmp.east);
+  \draw[flow] (cmp.south) -- node[lbl, pos=0.7]{yes} (yes.north);
+  \draw[flow] (cmp.south) -- node[lbl, pos=0.7]{no} (no.north);
+\end{tikzpicture}
+\caption{The replay path. Note what is \emph{not} swapped: the runtime itself. That is
+the point. If the loop were reimplemented for replay, replay would prove nothing about
+the loop.}
+\end{figure}
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{3.6cm}p{4.6cm}p{4.6cm}@{}}
+\begin{tabular}{@{}p{3.4cm}p{4.3cm}p{5.6cm}@{}}
 \toprule
 \textbf{Stand-in} & \textbf{Replaces} & \textbf{Replays from} \\
 \midrule
-\code{\_RecordedClock} & \code{time.time} & the exact \code{ts} of each original event, in order \\
-\code{\_RecordedAdapter} & the live \code{ModelAdapter} & each \code{model\_error} or \code{model\_responded} event, in order, re-raising errors/malformed outputs exactly as before \\
-\code{\_RecordedExecutor} & \code{ToolExecutor} & the \code{tool\_executed}/\code{tool\_failed} outcome recorded for each \code{tool\_requested}'s sequence number \\
-\code{\_RecordedApprovals} & the live approval policy & the \code{tool\_approved}/\code{tool\_denied} decision recorded per call id \\
+\code{\_RecordedClock} & \code{time.time} & the exact \code{ts} of each original event, handed out in append order \\
+\code{\_RecordedAdapter} & the live \code{ModelAdapter} & each \code{model\_error} or \code{model\_responded} event in order, re-raising errors and malformed outputs exactly as before \\
+\code{\_RecordedExecutor} & \code{ToolExecutor} & the \code{tool\_executed} or \code{tool\_failed} outcome recorded for each \code{tool\_requested} sequence number \\
+\code{\_RecordedApprovals} & the approval policy & the \code{tool\_approved} or \code{tool\_denied} decision recorded per call id \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The real, unmodified \code{Runtime} then drives the loop exactly as normal, writing
-to a fresh run id (\code{<original>-replay-<random>}) in the \emph{same} database
-file. Afterwards, \code{canonical\_log()} (Sec.\,3.3) encodes both the original and
-the replayed event lists, and they are compared. If they differ, the code walks both
-lists in lock-step and reports the sequence number of the first event whose canonical
-form differs --- so a divergence is reported as ``first differing event N,'' not just
-``it's different somewhere.''
+The clock deserves a second look, because it is the subtlest of the four. It is not a
+frozen time or a fake counter: it is a \emph{queue} of the original timestamps, handed
+out one per \code{append()} call. This only works because appends happen in exactly the
+same order on replay. If they did not, timestamps would attach to the wrong events and
+the comparison would fail. So the recorded clock is not merely a convenience for making
+the diff pass; it is itself an assertion that the append order was reproduced.
 
-\code{agentrun replay <run-id> --until <seq>} truncates the source log to events up
-to \code{seq} before replaying, giving a snapshot of what the run's state looked
-like at that exact point --- useful for stepping through a failure. Truncating the
-log can leave the replayed loop asking for a model turn or clock tick that was never
-recorded; rather than special-casing this, the recorded stand-ins simply raise when
-exhausted, and \code{replay\_run()} catches that \code{RuntimeError} and treats
-whatever was appended up to then as the answer.
+\subsection{Verified: it actually replays byte-identically}
 
-This doubles as a regression tripwire for the runtime's own code: if a future change
-to the loop alters the exact sequence of events it produces, replaying an
-\emph{old, previously-recorded} run will now diverge from its own recorded log and
-say exactly where.
+Running the real thing, not quoting the README:
+
+\begin{lstlisting}
+$ agentrun replay 46bd97a45451
+replayed 15/15 events into 46bd97a45451-replay-8765c6
+byte-identical: yes
+
+$ agentrun replay 46bd97a45451 --until 6
+replayed 7/7 events into 46bd97a45451-replay-7c1c16
+byte-identical: yes
+state at event 6: status=running, model_calls=2, tools_executed=['read_file']
+\end{lstlisting}
+
+\code{--until <seq>} truncates the source log before replaying, giving a snapshot of the
+run's state at that exact point. Truncating can leave the loop asking for a model turn
+that was never recorded; rather than special-casing the loop, the stand-ins raise when
+exhausted and \code{replay\_run()} treats that as the stop condition.
+
+\begin{honest}{The truncation catch swallows every \code{RuntimeError}, not just exhaustion}
+\code{replay\_run()} wraps \code{rt.start(...)} in \code{try: ... except RuntimeError:
+pass}. The intent, per the comment, is that a truncated log leaves the stand-ins
+exhausted and that is a normal stop.
+
+But the catch is unconditional (it is not gated on \code{until is not None}) and
+\code{RuntimeError} is exactly what three unrelated failures raise: the clock's
+``replay produced more events than the original run'', the adapter's ``replay adapter
+exhausted'', and \code{EventStore.append}'s ``could not append event for run''. A
+genuine bug in any of those is silently swallowed and reported as a normal stop.
+
+The blast radius is limited, because the comparator runs afterwards and a truncated
+replay of a full log would come back as ``not identical''. So the failure surfaces, just
+mislabeled: you would be told the logs diverge at seq N when what actually happened is
+that the store could not write. Catching the specific exhaustion condition, or gating
+the catch on \code{until}, would cost one line.
+\end{honest}
+
+\subsection{Replay writes into the same database, and that has consequences}
+
+The replayed run is not a scratch object. \code{replay\_run()} opens a second
+\code{EventStore} on \emph{the same database file} and appends a complete new run under
+the id \code{<original>-replay-<random>}. Nothing is cleaned up afterwards.
+
+This is visible in the repository itself. The tracked file \file{agentrun.db} contains
+45 events across 3 run ids: one real run and two replays of it, matching the transcript
+in \file{docs/screenshots/run-output.txt} exactly. Every replay you ever run
+permanently doubles a run's storage and adds a row to \code{agentrun runs list}, which
+was verified:
+
+\begin{lstlisting}
+$ agentrun runs list
+46bd97a45451                finished   ops_assistant   15 events  $0.0032 simulated ...
+46bd97a45451-replay-7c1c16  running    ops_assistant    7 events  $0.0005 simulated ...
+46bd97a45451-replay-8765c6  finished   ops_assistant   15 events  $0.0032 simulated ...
+\end{lstlisting}
+
+That is untidy. The next finding is not.
+
+\begin{honest}{A truncated replay can create a phantom approval that executes a real side effect. Verified.}
+This is the most serious thing in this document, and it was reproduced end to end.
+
+A replay run is a real run in every way the rest of the system can detect. Its
+\code{run\_created} event copies the original's \code{meta} verbatim
+(\code{meta=created.get("meta", \{\})}), including the real \code{workspace} path and
+\code{scenario\_path}. The only thing marking it as a replay is a substring in its run
+id. Nothing in \file{projection.py}, \file{cli.py}, \file{web/app.py} or
+\file{bootstrap.py} looks for that substring.
+
+Now replay with \code{--until} truncated exactly at a pending side-effecting call. The
+replayed run stops, correctly, at \code{waiting\_approval}. It is now a non-terminal run
+with a pending approval sitting in the shared database:
+
+\begin{lstlisting}
+$ agentrun replay d5ca78675af3 --until 8
+replayed 9/9 events into d5ca78675af3-replay-6c2258
+byte-identical: yes
+state at event 8: status=waiting_approval, model_calls=2, tools_executed=['read_file']
+
+$ agentrun approvals list
+d5ca78675af3-replay-6c2258  call-2-0  draft_email  {'to': 'billing@acme.example', ...}
+\end{lstlisting}
+
+The operator's approval queue now lists a call that no live run is waiting on,
+indistinguishable from a real one. Approve it and \code{approvals approve} calls
+\code{resume\_run()}, which rebuilds a runtime from that copied meta: a \emph{real}
+executor, over the \emph{real} workspace. The gate opens and the tool fires for real.
+Confirmed by deleting the outbox first, so that a reappearing file could only mean the
+handler genuinely ran:
+
+\begin{lstlisting}
+$ rm -rf ws/outbox
+$ agentrun approvals approve d5ca78675af3-replay-6c2258 call-2-0
+run d5ca78675af3-replay-6c2258: finished
+  final answer: Drafted a reminder email to Acme Corp for overdue invoice INV-1001.
+$ ls ws/outbox/
+Overdue_invoice_INV-1001.eml      <- written again, by a "replay"
+\end{lstlisting}
+
+The idempotency ledger cannot help: its key is \code{(run\_id, seq)} and the replay's
+run id is different by construction, so the ledger sees a brand new call.
+
+This directly undercuts the project's headline claim. ``Replay: no network, no tool
+handlers, no key needed'' is true \emph{during} replay. It is not true afterwards,
+because a truncated replay leaves behind a live, resumable run that is no longer a
+replay and that no longer knows it ever was one.
+
+Two changes would each independently close it, and both are small: put a
+\code{replay\_of: <run\_id>} field in the replayed \code{run\_created} payload and have
+\code{resume\_run}, \code{approvals list} and the web UI refuse or hide such runs; or
+replay into a throwaway database rather than the live one, which also fixes the
+storage growth and the polluted run list. The second is cleaner: a replay is a
+question, not a fact, and it has no business being written next to real runs at all.
+
+Scope, stated fairly: a \emph{full} replay ends in a terminal state and leaves no
+pending approval, so only \code{--until} triggers this, and \code{--until} is a
+debugging flag. The operator must also approve a call whose run id visibly contains
+\code{-replay-}. But the entire premise of an approval queue is that operators approve
+what it lists.
+\end{honest}
 
 % ============================================================
 \section{Failure injection}
 % ============================================================
 
-\begin{defterm}{Fault injection}
-Deliberately making a system behave as if something went wrong (a timeout, a
-malformed response, a server error) in a controlled test, to verify the system
-handles that failure the way it's supposed to, instead of only ever testing the
-happy path.
-\end{defterm}
+\begin{jargon}{Fault injection}
+Deliberately making a system behave as if something went wrong (a timeout, a malformed
+response, a server error) in a controlled test, to verify the system handles that
+failure the way it is supposed to, instead of only ever testing the happy path.
+\end{jargon}
 
-\code{faults.py} defines \code{FaultPlan}, a plain data class (loadable straight
-from a scenario's YAML \code{faults:} block) with two kinds of entries:
+\file{faults.py} defines \code{FaultPlan}, a plain dataclass loadable straight from a
+scenario's YAML \code{faults:} block:
 
 \begin{lstlisting}
 faults:
@@ -520,29 +909,46 @@ faults:
       - {at_attempt: 2, kind: timeout}
 \end{lstlisting}
 
-\code{model\_fault(call\_number)} is consulted by \code{MockModelAdapter.complete()}
-on every invocation (\code{at\_call} counts \emph{every} adapter call, including ones
-that themselves fail); \code{tool\_fault(tool\_name, attempt)} is the executor's
-\code{fault\_hook}, consulted before each execution attempt of a given tool
-(\code{at\_attempt} counts attempts for that specific tool). Both let a scenario
-exercise ``fails once, then a clean retry succeeds'' without needing a real failing
-service.
+\code{model\_fault(call\_number)} is consulted by \code{MockModelAdapter.complete()} on
+every invocation; \code{at\_call} counts \emph{every} adapter call, including ones that
+themselves fail. \code{tool\_fault(tool\_name, attempt)} is the executor's
+\code{fault\_hook}, consulted before each attempt of a given tool. Both let a scenario
+exercise ``fails once, then a clean retry succeeds'' without a real failing service.
+Unknown fault kinds are rejected at load time by \code{from\_dict}.
 
-The runtime's documented contract under faults: adapter errors retry with backoff
-then fail the run with a recorded cause; malformed output earns a corrective
-observation (twice), then fails the run; tool failures surface to the model as
-ordinary error observations it can react to. Nothing in the codebase raises an
-unhandled exception out of \code{drive()} in these paths --- \code{tests/test\_faults.py}
-is the suite that pins this contract down.
+The runtime's contract under faults: adapter errors retry with backoff then fail the run
+with a recorded cause; malformed output earns a corrective observation twice, then fails
+the run; tool failures surface to the model as ordinary error observations. Nothing
+raises out of \code{drive()}. \file{tests/test\_faults.py} pins this down.
+
+\subsection{The two-counter bug, and why it is the interesting one}
+
+The README singles out a bug worth understanding, because the fix is what makes fault
+plans work at all. \code{MockModelAdapter} keeps two counters:
+
+\begin{itemize}
+  \item \code{calls}: every invocation of \code{complete()}, including ones a fault plan
+  turns into an injected error. This is what \code{at\_call} matches against.
+  \item \code{script\_i}: how many script turns were actually \emph{consumed}.
+\end{itemize}
+
+The first design used one counter for both. An injected 500 on call 1 silently consumed
+script turn 1, so every later turn was off by one and every scenario with a fault tested
+the wrong thing. Splitting them fixed it: injected faults advance \code{calls} but not
+\code{script\_i}, so the script continues where it left off once the fault clears.
+
+Verified directly, by driving the adapter with a fault plan and reading both counters:
+an injected malformed fault leaves \code{calls=1, script\_i=0}. The script was not
+touched. Section 18 shows the other half of this story, which is not fixed.
 
 % ============================================================
 \section{Cost and latency accounting}
 % ============================================================
 
-Every \code{model\_responded} event carries a \code{usage} object: input/output
-token counts, latency in milliseconds, and a \code{simulated} boolean.
+Every \code{model\_responded} carries a \code{usage} object: input and output token
+counts, latency in milliseconds, and a \code{simulated} boolean.
 \code{accounting.py}'s \code{account(events)} folds these into per-run totals using a
-small, hardcoded USD-per-million-token price table:
+hardcoded price table in USD per million tokens:
 
 \begin{center}
 \small
@@ -553,559 +959,805 @@ small, hardcoded USD-per-million-token price table:
 \code{mock-1} & 3.00 & 15.00 \\
 \code{claude-sonnet-4-5} & 3.00 & 15.00 \\
 \code{gpt-4o} & 2.50 & 10.00 \\
-(anything else) & 3.00 (default) & 15.00 (default) \\
+(anything else) & 3.00 & 15.00 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The mock adapter (Sec.\,8.1) fabricates plausible-looking but fake usage numbers
-deterministically from message sizes, and \code{RunCosts.simulated} is set
-\code{True} whenever any usage in the run came from it; the CLI and web UI both print
-``(simulated)'' next to any such cost so it is never mistaken for a real bill.
-The README flags this price table as hardcoded and something that ``will drift'' ---
-an explicit, honest limitation rather than a claim of live-accurate pricing.
+The mock adapter fabricates deterministic but fake usage from message sizes, and
+\code{RunCosts.simulated} is true whenever any usage in the run came from it. The CLI
+and web UI both print ``(simulated)'' next to such a cost so it is never mistaken for a
+real bill. This was verified in the live output above: \code{cost: \$0.0021
+(simulated)}.
+
+\begin{honest}{Two small accounting inaccuracies}
+Neither is serious; both are the kind of thing worth knowing before someone asks.
+
+\code{costs.model = model or costs.model} keeps the \emph{last} model seen. A run whose
+adapter changed mid-flight (possible: \code{bootstrap} rebuilds the adapter from meta on
+every resume) reports one model name for the whole run. The per-event cost arithmetic is
+still correct, since each event is priced with its own model; only the reported label is
+lossy.
+
+The default price silently applies to unknown models. A run against a model not in the
+table produces a confident dollar figure computed from Claude Sonnet's prices, with
+nothing in the output saying so. Given the README already concedes the table ``will
+drift'', a \code{price\_source: default} marker in \code{RunCosts} would cost little.
+\end{honest}
 
 % ============================================================
-\section{Tools: the registry, the executor, and the built-ins}
+\section{Tools: registry, executor, built-ins}
 % ============================================================
 
-\subsection{Typed tool declarations}
-\begin{defterm}{JSON Schema}
-A specification language for describing the shape of JSON data --- which fields
-exist, their types, which are required. Tool arguments are declared this way so that
-badly-formed arguments (wrong type, missing required field) can be rejected before a
-handler ever runs, and so the same declaration can be handed to an LLM API to tell it
-exactly what a tool expects.
-\end{defterm}
+\begin{jargon}{JSON Schema}
+A specification language for describing the shape of JSON data: which fields exist,
+their types, which are required. Tool arguments are declared this way so badly formed
+arguments are rejected before a handler runs, and so the same declaration can be handed
+to an LLM API to tell it exactly what the tool expects. One declaration, two consumers.
+\end{jargon}
 
-\code{tools/registry.py}'s \code{ToolSpec} dataclass captures, per tool: its
-\code{name}, \code{description}, a JSON-schema \code{parameters} definition, the
-Python \code{handler} function, the \code{side\_effect} flag, a \code{timeout}
-(seconds), a \code{retries} count and a \code{backoff} base. \code{ToolRegistry}
-holds a set of specs, validates each schema at registration time
-(\code{jsonschema.Draft202012Validator.check\_schema}), and exposes
-\code{subset(names)} --- used to restrict a run to only the tools its agent
-definition (Sec.\,11) allows.
+\code{ToolSpec} captures, per tool: \code{name}, \code{description}, a JSON-schema
+\code{parameters} definition, the Python \code{handler}, the \code{side\_effect} flag, a
+\code{timeout}, a \code{retries} count and a \code{backoff} base. \code{ToolRegistry}
+validates each schema at registration time with
+\code{jsonschema.Draft202012Validator.check\_schema}, rejects duplicate names, and
+exposes \code{subset(names)}, used to restrict a run to only the tools its agent is
+allowed (Section 14).
 
-\subsection{Execution: timeout, retries, sandboxing}
-\code{tools/executor.py}'s \code{ToolExecutor.execute()}:
-\begin{enumerate}[nosep]
-  \item Checks the idempotency ledger first (Sec.\,6) --- if this exact call already
-  ran, return the recorded result immediately.
-  \item Validates arguments against the tool's JSON schema; a validation failure is
-  an immediate, non-retried failure (\code{invalid arguments: \dots}).
-  \item Runs the handler in a \code{ThreadPoolExecutor} with one worker, enforcing
-  the tool's \code{timeout} via \code{future.result(timeout=...)}.
-  \item Distinguishes two kinds of failure:
-  \begin{itemize}[nosep]
-    \item \textbf{\code{ToolError}} (and its subclass \code{ToolTimeout}) --- an
-    \emph{expected}, deterministic failure (bad path, disallowed host, missing file,
-    cell out of range). \code{ToolTimeout} still consumes a retry attempt with
-    backoff; a plain \code{ToolError} fails immediately, since retrying a
-    deterministic refusal cannot help.
-    \item \textbf{any other exception} --- treated as transient and retried with
-    the same exponential backoff used for adapter errors.
-  \end{itemize}
-\end{enumerate}
-
-\begin{defterm}{Sandbox}
+\begin{jargon}{Sandbox}
 A restricted execution environment that limits what a program can access, to contain
-the effect of something going wrong or being misused. Here, every filesystem tool
-resolves paths through \code{ToolContext.resolve()}, which rejects any path that
-would escape the run's workspace directory (checked via
-\code{Path.resolve()} and comparing against the workspace root's parents) --- so a
-model cannot be tricked into reading or writing outside its assigned sandbox folder.
-\end{defterm}
+the effect of something going wrong or being misused. Here every filesystem tool
+resolves paths through \code{ToolContext.resolve()}, which calls \code{Path.resolve()}
+(collapsing any \code{..} segments and following symlinks) and then rejects the path
+unless it is the workspace root itself or has the workspace root among its parents. So
+a model cannot be talked into reading \code{../../etc/passwd}.
+\end{jargon}
 
-\subsection{The seven built-in tools}
-All defined in \code{tools/builtin.py}, and all file paths are resolved inside the
-per-run workspace sandbox:
+\subsection{The eight built-in tools}
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{2.5cm}p{6.4cm}p{1.5cm}p{2.2cm}@{}}
+\begin{tabular}{@{}p{2.4cm}p{6.3cm}p{1.4cm}p{2.9cm}@{}}
 \toprule
 \textbf{Tool} & \textbf{What it does} & \textbf{Side effect?} & \textbf{Notes} \\
 \midrule
-\code{read\_file} & reads a UTF-8 text file (truncated to 20{,}000 chars) & no & \\
-\code{write\_file} & writes a UTF-8 text file & \textbf{yes} & \\
-\code{list\_files} & recursively lists files under a directory (max 500) & no & \\
-\code{http\_get} & GETs a URL & no & host must be in an explicit allowlist, else \code{ToolError}; 15s timeout \\
-\code{csv\_update} & \code{append\_row} or \code{set\_cell} on a CSV file & \textbf{yes} & out-of-range cell is a \code{ToolError} \\
-\code{draft\_email} & writes an RFC\,5322 \code{.eml} file to a workspace \code{outbox/} folder & \textbf{yes} & never sends anything over a network; the filename is sanitized from the subject \\
-\code{calendar\_add} & inserts a row into a per-workspace SQLite \code{calendar.db} & \textbf{yes} & \\
-\code{calendar\_list} & reads all rows back, ordered by start time & no & \\
+\code{read\_file} & read a UTF-8 text file & no & content truncated to 20{,}000 chars \\
+\code{write\_file} & write a UTF-8 text file & \textbf{yes} & creates parent dirs \\
+\code{list\_files} & recursively list files under a directory & no & capped at 500 names \\
+\code{http\_get} & GET a URL & no & host must be on an explicit allowlist, else \code{ToolError}; 15s timeout \\
+\code{csv\_update} & \code{append\_row} or \code{set\_cell} on a CSV & \textbf{yes} & out-of-range cell is a \code{ToolError} \\
+\code{draft\_email} & write an RFC 5322 \code{.eml} into the workspace \file{outbox/} & \textbf{yes} & never sends; filename sanitized from the subject \\
+\code{calendar\_add} & insert a row into a per-workspace SQLite \file{calendar.db} & \textbf{yes} & \\
+\code{calendar\_list} & read the calendar back, ordered by start time & no & \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\begin{defterm}{Allowlist}
-A list of explicitly permitted values (here, hostnames) where everything not on the
-list is rejected by default --- the opposite of a blocklist, and generally the safer
-default for anything reachable by an untrusted or semi-autonomous actor like an LLM.
-\end{defterm}
+\begin{jargon}{Allowlist}
+A list of explicitly permitted values (here, hostnames) where everything not on the list
+is rejected by default. The opposite of a blocklist, and the safer default for anything
+reachable by a semi-autonomous actor: a blocklist fails open on the case you did not
+think of, an allowlist fails closed.
+\end{jargon}
+
+\begin{honest}{\code{http\_get} is marked read-only, which is a judgment call, not a fact}
+\code{http\_get} has \code{side\_effect=False}, so it never reaches the approval gate.
+An HTTP GET is \emph{conventionally} safe, but nothing enforces that: a GET can trigger
+anything the server chooses, and \code{follow\_redirects=True} means the allowlist is
+checked against the URL the model asked for, not against wherever it ends up. An
+allowlisted host that redirects offsite is fetched without a second check.
+
+In practice the allowlist defaults to empty (\code{AGENTRUN\_HTTP\_ALLOWLIST}
+unset blocks every host), so the exposure needs an operator to opt in. Worth naming
+anyway: this is the one tool whose safety rests on a convention about the wider world
+rather than on a check in this codebase.
+\end{honest}
+
+\begin{honest}{\code{draft\_email} silently overwrites drafts with the same subject}
+The \code{.eml} filename is derived only from the subject, sanitized and truncated to 60
+characters. Two drafts to \emph{different recipients} with the same subject, or two
+subjects agreeing in their first 60 characters, resolve to the same path and the second
+overwrites the first with no error. The tool's returned \code{draft\_path} then names a
+file whose contents belong to a different email than the one the log says was drafted.
+The audit trail and the artifact disagree, which is a poor property for the one tool the
+approval gate exists to guard.
+\end{honest}
 
 % ============================================================
 \section{Model adapters}
 % ============================================================
 
-\begin{defterm}{Adapter (in this codebase)}
-A small class implementing one interface (\code{ModelAdapter.complete(messages,
-tools) -> ModelTurn}) around a specific way of getting the ``next turn'' --- a real
-API, or a scripted fake. The rest of the runtime only ever talks to this interface,
-never to a specific provider's request/response shape directly.
-\end{defterm}
+\begin{jargon}{Adapter}
+A class implementing one interface (\code{ModelAdapter.complete(messages, tools)
+$\rightarrow$ ModelTurn}) around a specific way of getting the next turn: a real API, or
+a scripted fake. The rest of the runtime only ever talks to this interface, never to a
+provider's request or response shape directly. That is what makes the mock adapter
+possible, and the mock adapter is what makes the whole project testable offline.
+\end{jargon}
 
-\code{adapters/base.py} defines the shared \code{ModelTurn} (text, tool calls,
-token \code{Usage}, model name; \code{is\_final} is true exactly when there are no
-tool calls) and two exception types the runtime specifically catches:
-\code{AdapterError} (transport/provider failure, retryable) and
-\code{MalformedOutputError} (output that could not be parsed into a turn at all,
-carrying the raw text for diagnosis).
+\file{adapters/base.py} defines the shared \code{ModelTurn} (text, tool calls,
+\code{Usage}, model name, with \code{is\_final} true exactly when there are no tool
+calls) and the two exceptions the runtime catches by name: \code{AdapterError}
+(transport or provider failure, retryable) and \code{MalformedOutputError} (output that
+could not be parsed at all, carrying the raw text for diagnosis).
 
-\subsection{\code{MockModelAdapter} --- the offline, deterministic adapter}
-\code{adapters/mock.py} plays back a \emph{script}: an ordered list of turns taken
-straight from a scenario YAML file (Sec.\,12), each either \code{tool\_calls},
-\code{final} text, or \code{malformed} raw garbage. Two separate counters matter
-here and are easy to conflate (the README singles this out as a real bug the project
-hit and fixed): \code{calls} counts \emph{every} invocation of \code{complete()},
-including ones a fault plan turns into an injected error; \code{script\_i} counts
-only script turns actually \emph{consumed}. Injected faults do not advance
-\code{script\_i}, so the script continues exactly where it left off once the fault
-clears. Usage numbers are fabricated deterministically from message/output size
-(never a real token count) and always carry \code{simulated: true}.
+\subsection{\code{MockModelAdapter}}
 
-\subsection{\code{AnthropicAdapter} and \code{OpenAIAdapter} --- live, but unexercised here}
-\code{adapters/anthropic\_adapter.py} and \code{adapters/openai\_adapter.py}
-implement request-building and response-parsing for the Anthropic Messages API
-(\code{POST /v1/messages}) and the OpenAI Chat Completions API
-(\code{POST /v1/chat/completions}) respectively, each keyed by an environment
-variable (\code{ANTHROPIC\_API\_KEY}, \code{OPENAI\_API\_KEY}) and using
-\code{httpx} for the HTTP transport. Both translate the neutral message list
-(Sec.\,5) into their provider's wire shape, map HTTP $\geq$500 and other non-200
-responses to \code{AdapterError}, and map an unexpected response shape (e.g.\ a
-missing field) to \code{MalformedOutputError}.
+\file{adapters/mock.py} plays back a \emph{script}: an ordered list of turns from a
+scenario YAML, each either \code{tool\_calls}, \code{final} text, or \code{malformed}
+raw garbage. Usage numbers are fabricated deterministically from message and output size
+and always carry \code{simulated: true}. Call ids are generated as
+\code{call-\{calls\}-\{i\}}, which is where the \code{call-2-0} in the transcripts comes
+from: the second adapter call, first tool call in it.
 
-\begin{tcolorbox}[colback=red!6,colframe=red!50!black,title={Honest scope note (verbatim from the project's own README)},fonttitle=\bfseries\small]
-``The Anthropic and OpenAI adapters are implemented against their current APIs and
-covered by offline contract tests (request building, response parsing, error mapping
-via injected HTTP transports), but no live API calls were made here because no API
-keys were available. Everything else, including the full test suite, the CLI and the
-web UI, runs and was verified entirely offline.''
-\end{tcolorbox}
+\begin{honest}{``Surfaced as a hard error'' is not what happens when a script runs out}
+The comment above the script-exhausted branch says running past the end of a script ``is
+a scenario bug, surfaced as a hard error rather than a guess''. But the code raises
+\code{MalformedOutputError}, and \file{runtime.py} catches that by name and handles it
+gracefully: it records the run as having received malformed model output, feeds the
+model a corrective ``your previous output could not be parsed'' message, and after
+\code{max\_malformed} tries fails the run with cause \code{malformed\_model\_output:
+mock script exhausted after N turns}.
 
-\begin{defterm}{Contract test}
-A test that checks a piece of code produces the exact request shape a real API
-expects, and correctly parses the exact response shape that API returns --- without
-actually calling the real API. It verifies the code's side of the ``contract''
-between the two systems, using a fake/injected transport in place of the network.
-\code{tests/test\_adapters.py} does this for both live adapters by injecting a fake
-\code{httpx.Client}.
-\end{defterm}
+So a scenario authoring mistake is reported as a \emph{model behavior} problem. The
+cause string does carry the real reason, which saves it, but the run's shape (two
+corrective retries, then a malformed failure) is the shape of a misbehaving model, not
+of a too-short script. A distinct exception type that \code{drive()} does not catch
+would be a hard error; \code{MalformedOutputError} is by construction the one thing that
+cannot be.
+\end{honest}
+
+\subsection{\code{AnthropicAdapter} and \code{OpenAIAdapter}}
+
+Both implement request building and response parsing for their provider:
+\code{POST /v1/messages} (Anthropic Messages API) and
+\code{POST /v1/chat/completions} (OpenAI Chat Completions), keyed by
+\code{ANTHROPIC\_API\_KEY} and \code{OPENAI\_API\_KEY}, over \code{httpx}. Each
+translates the neutral message list into its provider's wire shape: Anthropic's
+\code{tool\_use} and \code{tool\_result} content blocks (where a tool result is carried
+on a \code{user} message) versus OpenAI's \code{tool\_calls} array and a dedicated
+\code{tool} role. Both map HTTP $\geq$ 500 and other non-200 responses to
+\code{AdapterError}, and an unexpected response shape to \code{MalformedOutputError}.
+
+Both take an injectable \code{client}, which is what makes them testable with no
+network: \file{tests/test\_adapters.py} passes a fake \code{httpx.Client}.
+
+\begin{jargon}{Contract test}
+A test that checks a piece of code produces the exact request shape a real API expects
+and correctly parses the exact response shape that API returns, without calling the real
+API. It verifies this side of the contract between two systems. It cannot verify the
+other side: if the provider's real API differs from what the test assumes, the test still
+passes.
+\end{jargon}
+
+\begin{honest}{The live adapters are unverified, and the README says so}
+Quoting the project's own scope note: ``The Anthropic and OpenAI adapters are implemented
+against their current APIs and covered by offline contract tests (request building,
+response parsing, error mapping via injected HTTP transports), but \textbf{no live API
+calls were made here because no API keys were available}. Everything else, including the
+full test suite, the CLI and the web UI, runs and was verified entirely offline.''
+
+This document confirms the second half by running it (Section 21) and cannot confirm the
+first half either. The honest reading: the contract tests prove the adapters are
+self-consistent, not that they are correct against the real APIs. What would actually be
+caught by a live call and not by these tests: a required header, a renamed field, a
+changed enum value, an auth detail, a tool-schema constraint the provider enforces.
+That is a real gap, and the README is right to name it rather than imply coverage the
+tests do not give.
+\end{honest}
 
 % ============================================================
-\section{Agent definitions and example scenarios}
+\section{Agents and scenarios}
 % ============================================================
 
-\code{agents.py} defines three named agents, each a fixed system prompt plus a
-fixed, restricted subset of tools it may call:
+\file{agents.py} defines three agents, each a fixed system prompt plus a restricted tool
+subset. The subset is enforced by \code{registry.subset()}, so a tool a agent is not
+granted is not merely discouraged by the prompt, it is not in the registry the adapter
+is shown, and a call to it would append \code{tool\_failed} with ``unknown tool''.
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{3.3cm}p{8.9cm}@{}}
+\begin{tabular}{@{}p{3.2cm}p{10.4cm}@{}}
 \toprule
 \textbf{Agent} & \textbf{Role and allowed tools} \\
 \midrule
 \code{ops\_assistant} & Chases overdue invoices, drafts (never sends) reminder emails, keeps an invoice CSV current. Tools: \code{read\_file}, \code{list\_files}, \code{csv\_update}, \code{draft\_email}, \code{calendar\_add}, \code{calendar\_list}. \\[0.3em]
-\code{data\_entry} & Transcribes records into CSV sheets, verifying by reading back what it wrote. Tools: \code{read\_file}, \code{list\_files}, \code{write\_file}, \code{csv\_update}. \\[0.3em]
-\code{research\_summarizer} & Fetches allowlisted pages and local notes, writes a summary with sources. Tools: \code{read\_file}, \code{list\_files}, \code{http\_get}, \code{write\_file}. \\
+\code{data\_entry} & Transcribes records into CSV sheets, verifying by reading back. Tools: \code{read\_file}, \code{list\_files}, \code{write\_file}, \code{csv\_update}. \\[0.3em]
+\code{research\_summarizer} & Fetches allowlisted pages and local notes, writes a sourced summary. Tools: \code{read\_file}, \code{list\_files}, \code{http\_get}, \code{write\_file}. \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The repository ships 24 scenario YAML files under \code{scenarios/}, split evenly
-across three subfolders matching the three agents: 8 in \code{data\_entry/}, 8 in
-\code{ops\_assistant/}, 8 in \code{research/} (counted directly from the files
-present in the \code{scenarios/} directory tree).
-
-\subsection{A concrete run, end to end}
-The scenario \code{scenarios/ops\_assistant/chase\_overdue\_acme.yaml} is a small,
-representative example: the request is ``Chase the overdue invoice from Acme Corp
-with a reminder email,'' and behavior \code{v1} scripts exactly three model turns
-(read the invoice file, draft the reminder email, give a final answer). Running it
-through \code{agentrun run} produces this event sequence (traced from
-\code{runtime.py} step by step for this exact script):
-
-\begin{center}
-\begin{tikzpicture}[
-  node distance=0.42cm and 0,
-  ev/.style={draw, rounded corners, fill=blue!6, align=left, font=\scriptsize\ttfamily, minimum width=11.5cm, minimum height=0.55cm, inner sep=4pt},
-  gap/.style={ev, fill=orange!10}
-]
-  \node[ev] (e0) {seq 0 \ \ run\_created \ \ agent=ops\_assistant, request="Chase the overdue invoice..."};
-  \node[ev, below=of e0] (e1) {seq 1 \ \ model\_requested \ \ call\_number=1};
-  \node[ev, below=of e1] (e2) {seq 2 \ \ model\_responded \ \ tool\_calls=[read\_file(invoices.csv)]};
-  \node[ev, below=of e2] (e3) {seq 3 \ \ tool\_requested \ \ read\_file, side\_effect=false};
-  \node[ev, below=of e3] (e4) {seq 4 \ \ tool\_executed \ \ result=invoice rows};
-  \node[ev, below=of e4] (e5) {seq 5 \ \ checkpoint \ \ model\_calls=1, calls\_resolved=1};
-  \node[ev, below=of e5] (e6) {seq 6 \ \ model\_requested \ \ call\_number=2};
-  \node[ev, below=of e6] (e7) {seq 7 \ \ model\_responded \ \ tool\_calls=[draft\_email(...)]};
-  \node[ev, below=of e7] (e8) {seq 8 \ \ tool\_requested \ \ draft\_email, side\_effect=true};
-  \node[gap, below=of e8] (e9) {seq 9 \ \ tool\_approved \ \ approver=policy:auto  \emph{(gate: Sec.\,4.1)}};
-  \node[ev, below=of e9] (e10) {seq 10 \ \ tool\_executed \ \ result=\{draft\_path: outbox/...eml\}};
-  \node[ev, below=of e10] (e11) {seq 11 \ \ checkpoint \ \ model\_calls=2, calls\_resolved=2};
-  \node[ev, below=of e11] (e12) {seq 12 \ \ model\_requested \ \ call\_number=3};
-  \node[ev, below=of e12] (e13) {seq 13 \ \ model\_responded \ \ final="Drafted a reminder email..."};
-  \node[ev, below=of e13, fill=green!12] (e14) {seq 14 \ \ run\_finished \ \ final\_answer="Drafted a reminder email..."};
-\end{tikzpicture}
-\end{center}
-
-With the CLI's default auto-approve policy, \code{tool\_approved} happens
-automatically at seq 9; run without \code{--auto-approve} and no policy at all, the
-loop would instead stop and return \code{waiting\_approval} right before seq 9,
-and a human would run \code{agentrun approvals approve <run-id> call-2-0} to
-produce exactly that event and let the loop continue --- the same downstream events
-(10 through 14) follow either way, because they are computed from the log, not from
-which code path triggered the approval.
+The repository ships 24 scenario YAML files, 8 per agent folder, counted directly from
+the tree and confirmed by the suite reporting 24 scenarios when run. The README's
+``Challenges'' section notes this count was itself once wrong and was corrected by
+checking the files; it is right now.
 
 % ============================================================
 \section{Scenario regression testing}
 % ============================================================
 
-\begin{defterm}{Regression test}
-A test that exists specifically to catch a case where something that used to work
-now behaves differently, typically run after a change (here: after a model version
-or prompt changes) to prove nothing that used to pass now fails.
-\end{defterm}
+\begin{jargon}{Regression test}
+A test that exists specifically to catch something that used to work and now behaves
+differently. Here, the thing that changes is not the code: it is the model, or the
+prompt. That is the point.
+\end{jargon}
 
-Each scenario YAML (\code{scenarios/loader.py}, validated against a strict JSON
-schema) has: a \code{name}, an \code{agent}, a \code{request}, optional
-\code{workspace\_files} (fixture files created before the run), one or more named
-\code{behaviors} (each a full script for \code{MockModelAdapter}, Sec.\,8.1),
-optional \code{approvals} (\code{auto}, or a \code{deny} list with a \code{reason}),
-optional \code{faults} (Sec.\,9), and an \code{expect} block of assertions.
+\begin{keyidea}{What is actually being tested}
+This is the part most agent demos have no answer for. You cannot unit-test ``the agent
+does the right thing'', because the agent's behavior lives in a model you do not
+control and cannot pin. So this project tests the loop against a \emph{recorded}
+behavior instead: a scenario names one or more behavior versions, each a full script of
+what the model would say, and asserts what the runtime does with it.
+
+That reframes the question from ``is the agent correct'' (unanswerable) to ``if the
+model behaves like \emph{this}, does the runtime do the right thing, and does behavior
+\code{v2} differ from \code{v1}, and where exactly'' (answerable, offline, in seconds,
+for free).
+\end{keyidea}
+
+Each scenario YAML is validated against a strict JSON schema in \file{loader.py} with
+\code{additionalProperties: False} throughout, so a typo in a key is a load error rather
+than a silently ignored assertion. \code{load\_pack} also rejects duplicate scenario
+names across the tree. A second, hand-written check enforces what JSON Schema expresses
+awkwardly: each behavior turn must have exactly one of \code{tool\_calls}, \code{final}
+or \code{malformed}.
 
 \subsection{Assertions}
-\code{scenarios/runner.py}'s \code{check\_expectations()} evaluates every assertion
-present (never short-circuiting on the first failure, so a failing scenario reports
-everything wrong at once):
+
+\code{check\_expectations()} evaluates every assertion present and never short-circuits,
+so a failing scenario reports everything wrong at once:
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{4.9cm}p{7.9cm}@{}}
+\begin{tabular}{@{}p{5.5cm}p{7.9cm}@{}}
 \toprule
 \textbf{Assertion key} & \textbf{Checks} \\
 \midrule
-\code{status} & final run status equals \code{finished}/\code{failed}/\code{waiting\_approval} \\
-\code{tools\_executed} & the \emph{exact}, ordered list of tools that executed successfully \\
-\code{tools\_executed\_contains} & these tools ran somewhere (order/extras ignored) \\
+\code{status} & final run status \\
+\code{tools\_executed} & the exact, ordered list of tools that executed successfully \\
+\code{tools\_executed\_contains} & these tools ran somewhere (order and extras ignored) \\
 \code{tools\_not\_executed} & these tools never ran \\
-\code{denied\_tools} & these tools were denied at the approval gate \\
+\code{denied\_tools} & these tools were denied at the gate \\
 \code{final\_contains} / \code{final\_not\_contains} & case-insensitive substring checks on the final answer \\
 \code{failure\_cause\_contains} & substring of the recorded failure cause \\
-\code{files\_exist} & workspace-relative paths that must exist afterward \\
+\code{files\_exist} & workspace-relative paths that must exist afterwards \\
 \code{min\_events} & minimum total event count \\
-\code{no\_side\_effect\_before\_approval} & every executed side-effecting call had a \code{tool\_approved} event \emph{before} its \code{tool\_executed} event, by sequence number \\
+\code{no\_side\_effect\_before\_approval} & every executed side-effecting call has a \code{tool\_approved} event at a \emph{lower seq} than its \code{tool\_executed} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\subsection{Running and comparing versions}
-\code{agentrun test scenarios/ --behavior v1 --compare v2 --html report.html} runs
-every scenario in the pack against behavior \code{v1}, then again against
-\code{v2}, and diffs them. The diff mechanism
-(\code{scenarios/runner.event\_signature()}) reduces each event to a compact
-\code{"type:tool-or-call-id"} string (e.g.\ \code{tool\_requested:read\_file}); two
-scenarios' signature lists are compared element-by-element, and the first index
-where they differ is reported as the first point of behavioral divergence --- e.g.\
-``expected \code{tool\_requested:read\_file}, got
-\code{tool\_requested:draft\_email} at event 3.'' No general-purpose diff library is
-used; a list of short strings compared position-by-position is sufficient
-(\code{scenarios/report.py}'s \code{diff\_results()}). \code{terminal\_report},
-\code{terminal\_diff} and \code{html\_report} render this to the console and to a
-static HTML file respectively; the HTML report is generated by hand-built string
-templates, not a templating library.
+The last one is the safety property of the whole project, expressed as an assertion over
+the log. Its own comment concedes it ``always holds by construction; the assertion
+documents it per scenario''. That is a fair description and a reasonable thing to
+assert anyway: it is a tripwire on the construction, and it costs nothing.
+
+\subsection{Verified: running the suite}
+
+\begin{lstlisting}
+$ agentrun test scenarios/ --behavior v1
+behavior v1: 24/24 scenarios passed
+  [PASS] batch-entry-with-listing (20 events, status=finished, cost=$0.0032 simulated)
+  [PASS] create-new-sheet (10 events, status=finished, cost=$0.0012 simulated)
+  ...
+
+$ agentrun test scenarios/ --behavior v1 --compare v2
+comparing v1 -> v2: v2 fails 3 of 24 scenarios (3 regressions vs v1)
+  [REGRESSION] chase-overdue-acme
+      first divergence at event 3: expected tool_requested:read_file,
+                                        got tool_requested:draft_email
+      v2 failure: tools_executed: expected ['read_file', 'draft_email'],
+                                       got ['draft_email']
+  [REGRESSION] transcribe-two-records
+      first divergence at event 14: expected tool_requested:csv_update, got run_finished
+  [REGRESSION] summarize-notes
+      first divergence at event 8: expected tool_requested:write_file, got run_finished
+\end{lstlisting}
+
+The \code{v2} behaviors are deliberately degraded: \code{chase-overdue-acme}'s
+\code{v2} drafts the email \emph{without reading the invoice first}, which is exactly
+the kind of regression a new model version might introduce and exactly the kind a
+pass/fail assertion alone would describe uselessly. The diff names the event.
+
+The mechanism is deliberately unsophisticated and it is worth defending as such.
+\code{event\_signature()} reduces each event to a \code{"type:tool-or-call-id"} string;
+\code{diff\_results()} walks two signature lists in lock-step and reports the first
+index where they differ. No diffing library, no heuristics. For an ordered list of short
+strings, first-mismatch is the correct and complete answer. The README's claim that ``a
+per-event type:detail signature is enough for useful regression diffs'' is borne out by
+the output above, which is genuinely the most useful line in the whole tool.
 
 % ============================================================
-\section{The command-line interface}
+\section{The command line interface}
 % ============================================================
 
-\code{cli.py} exposes a single \code{agentrun} entry point (registered via
-\code{pyproject.toml}'s \code{[project.scripts]}) built with \textbf{Click}, a
-Python library for building command-line tools out of decorated functions.
+\file{cli.py} exposes a single \code{agentrun} entry point registered via
+\file{pyproject.toml}'s \code{[project.scripts]}, built with \textbf{Click}, a library
+for building command line tools out of decorated functions.
 
 \begin{center}
 \small
-\begin{tabular}{@{}p{4.6cm}p{8.2cm}@{}}
+\begin{tabular}{@{}p{5.2cm}p{8.2cm}@{}}
 \toprule
 \textbf{Command} & \textbf{What it does} \\
 \midrule
-\code{agentrun run --scenario \dots} & starts a mock-adapter run scripted by a scenario file; \code{--auto-approve} skips the human gate \\
-\code{agentrun resume <run-id>} & rebuilds the exact runtime for an existing run from its \code{run\_created} metadata and drives it forward (Sec.\,15) \\
-\code{agentrun replay <run-id> [--until N]} & deterministic replay (Sec.\,7); exits nonzero if not byte-identical \\
-\code{agentrun runs list} / \code{show} & lists all runs with status/cost, or prints one run's full canonical event log \\
-\code{agentrun approvals list} / \code{approve} / \code{deny} & manage the human approval queue \\
-\code{agentrun test <pack> [--behavior --compare --html]} & runs the scenario regression suite (Sec.\,12) \\
-\code{agentrun serve [--host --port]} & serves the FastAPI web UI (Sec.\,14) via \code{uvicorn} \\
-\code{agentrun agents} & lists the built-in agent definitions and their tools \\
+\code{agentrun run --scenario ...} & start a mock-adapter run scripted by a scenario; \code{--auto-approve} skips the gate \\
+\code{agentrun resume <run-id>} & rebuild the runtime from \code{run\_created} meta and drive forward \\
+\code{agentrun replay <run-id> [--until N]} & deterministic replay; exits nonzero if not byte-identical \\
+\code{agentrun runs list} / \code{show} & list runs with status and cost, or print one run's canonical log \\
+\code{agentrun approvals list|approve|deny} & manage the approval queue; \code{deny --reason} \\
+\code{agentrun test <pack> [--behavior --compare --html]} & the scenario suite \\
+\code{agentrun serve [--host --port]} & the FastAPI web UI via \code{uvicorn} \\
+\code{agentrun agents} & list agent definitions and their tools \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Every command takes a \code{--db} option (default \code{agentrun.db}, overridable by
-the \code{AGENTRUN\_DB} environment variable) pointing at the SQLite file to use.
+Every command takes \code{--db} (default \code{agentrun.db}, overridable by
+\code{AGENTRUN\_DB}). Both \code{replay} and \code{test} exit nonzero on failure, which
+is what makes them usable in a CI pipeline.
+
+\begin{honest}{The default database path writes into the repository, and one is committed}
+\code{DEFAULT\_DB} is the bare relative path \code{agentrun.db}, so every command run
+from the project root creates or extends \file{agentrun.db} \emph{in the working tree}.
+\file{.gitignore} does not list it. Consequently \file{agentrun.db} is tracked in git:
+36 KB holding 45 events across 3 run ids, one real run and two of its replays, exactly
+matching the demo transcript in \file{docs/screenshots/run-output.txt}.
+
+Following the README's own quickstart therefore dirties the repository, and \code{git
+status} reports a modified binary the user did not knowingly touch. The stored database
+is also not inert documentation: it contains a run whose \code{meta} points at an
+absolute workspace path from the author's machine.
+
+Nothing here is dangerous, and the file is small. But an event store is generated
+output, and the fix is two lines: add \code{agentrun.db} to \file{.gitignore}, remove
+it from the index, and default \code{AGENTRUN\_DB} somewhere outside the tree. If the
+committed database is meant as a demo fixture, that intent should be stated and it
+should be named like one.
+\end{honest}
 
 % ============================================================
 \section{The web UI}
 % ============================================================
 
-\code{web/app.py} builds a small \textbf{FastAPI} application (a Python web
-framework for building HTTP APIs, here used to serve plain HTML pages instead) with
-three routes:
+\file{web/app.py} builds a small \textbf{FastAPI} application (a Python web framework;
+here used to serve plain HTML rather than a JSON API) with three routes:
 
-\begin{itemize}[nosep]
-  \item \code{GET /} --- a table of every run: id, agent, status badge, event count,
-  cost.
-  \item \code{GET /runs/\{run\_id\}} --- one run's status, cost/latency summary, any
-  \emph{pending approvals} rendered as a human-readable \textbf{diff-style preview}
-  of what the action would change (Sec.\,14.1), and the full event timeline.
-  \item \code{POST /runs/\{run\_id\}/calls/\{call\_id\}/approve} and
-  \code{/deny} --- record the decision, then call \code{resume\_run()}
-  (Sec.\,15) \emph{synchronously, inside the HTTP request handler}, before
-  redirecting back to the run page.
+\begin{itemize}
+  \item \code{GET /}: a table of every run: id, agent, status badge, event count, cost.
+  \item \code{GET /runs/\{run\_id\}}: one run's status, cost and latency summary, any
+  pending approvals rendered as a diff-style preview, and the full event timeline.
+  \item \code{POST /runs/\{run\_id\}/calls/\{call\_id\}/approve} and \code{/deny}:
+  record the decision, then call \code{resume\_run()} \emph{synchronously inside the
+  request handler} before redirecting back.
 \end{itemize}
 
-\begin{tcolorbox}[colback=red!6,colframe=red!50!black,title={Known limitation (from the README, stated by the project itself)},fonttitle=\bfseries\small]
-``Approvals via the web UI resume the run synchronously inside the request handler.
-A slow tool blocks the HTTP worker for its whole timeout. A real deployment needs a
-worker process consuming a resume queue, with the UI only appending decision
-events.''
-\end{tcolorbox}
+All HTML is built by string concatenation with \code{html.escape()} applied to every
+interpolated value, including the model's own text. That matters more than it looks:
+the model's output is untrusted input, and it lands on a page an operator reads. The
+escaping is applied consistently in the routes reviewed.
 
 \subsection{Diff-style previews}
-\code{web/preview.py}'s \code{preview(tool, args, workspace)} renders, for a
-\emph{pending} side-effecting call, what it would change, before a human approves it:
-for \code{write\_file} and \code{csv\_update} it computes a real unified diff
-(Python's \code{difflib.unified\_diff}) between the current file content and what the
-call would produce; for \code{draft\_email} and \code{calendar\_add} (which have no
-natural ``before'' state to diff against) it renders a plain \code{+}-prefixed
-summary of the new content instead.
 
-\begin{defterm}{Unified diff}
-A standard, compact way to show the difference between two versions of a text file:
-unchanged lines shown plainly, removed lines prefixed \code{-}, added lines prefixed
-\code{+}. The format produced by \code{git diff} and Unix \code{diff -u}.
-\end{defterm}
+\code{web/preview.py}'s \code{preview(tool, args, workspace)} renders what a
+\emph{pending} call would change, before a human approves it. For \code{write\_file} and
+\code{csv\_update} it computes a real unified diff between the current file content and
+what the call would produce, by simulating the operation in memory. For
+\code{draft\_email} and \code{calendar\_add}, which have no natural ``before'' state, it
+renders a \code{+}-prefixed summary. Anything else falls back to pretty-printed JSON
+arguments.
+
+\begin{jargon}{Unified diff}
+A compact standard format for showing the difference between two versions of a text
+file: unchanged lines plain, removed lines prefixed \code{-}, added lines prefixed
+\code{+}. What \code{git diff} prints.
+\end{jargon}
+
+This is the single most product-minded idea in the repository. An approval gate that
+shows an operator a blob of JSON arguments will be rubber-stamped within a day; one that
+shows the actual diff of the actual file is a control someone might really read.
+
+\begin{honest}{The preview is a re-implementation of the tool, and can disagree with it}
+\code{preview.py} does not call the tool. It re-implements the tool's logic to predict
+the outcome: its own CSV load, its own \code{append\_row} and \code{set\_cell}. Two
+implementations of one behavior, with no test asserting they agree.
+
+They already differ. \code{\_csv\_update} in \file{builtin.py} raises \code{ToolError}
+for an out-of-range cell; \code{preview.py}'s \code{set\_cell} branch checks
+\code{if r < len(new\_rows) and c < len(new\_rows[r])} and, when false, silently changes
+nothing. So a proposed out-of-range \code{csv\_update} previews as ``(no textual
+change)'', looks harmless, gets approved, and then fails. That is a benign direction to
+fail in. The dangerous direction is the same structure with the roles reversed: any
+future divergence where the preview under-states what the tool will do is a gate showing
+the operator something other than what they are approving. The fix is to have the tools
+expose a pure ``compute the new content'' function that both the handler and the preview
+call.
+\end{honest}
+
+\begin{honest}{The gate has no authentication, and resumes inside the request handler}
+Two issues, one from the README and one not.
+
+The README's own: ``Approvals via the web UI resume the run synchronously inside the
+request handler. A slow tool blocks the HTTP worker for its whole timeout. A real
+deployment needs a worker process consuming a resume queue, with the UI only appending
+decision events.'' Correct, and Section 8's finding sharpens it: a \emph{hung} tool does
+not merely block for its timeout, it blocks until the handler returns.
+
+Not in the README: there is no authentication of any kind. No login, no token, no CSRF
+protection on the approve and deny POSTs. Anyone who can reach the port can approve any
+side effect, and any page an operator visits can forge a cross-site POST to it. The
+default bind is \code{127.0.0.1}, which is the mitigation and a real one, but
+\code{--host} is offered with no warning attached. For most CRUD apps this would be
+ordinary prototype scope. Here the approval gate \emph{is} the security control the
+project is built around, so ``the control has no access control'' is worth stating
+plainly rather than leaving for someone else to notice.
+\end{honest}
 
 % ============================================================
-\section{Bootstrap: constructing runtimes for new and existing runs}
+\section{Bootstrap, resume, and a real off-by-one}
 % ============================================================
 
-\code{bootstrap.py} is the module the CLI and web UI both call into so that
-``build me a working \code{Runtime} for this run'' is written exactly once. Its key
-insight, stated in its own docstring: \emph{run metadata (workspace path, adapter
-kind, scenario file, behavior version) lives in the \code{run\_created} event, so
-any process with the database can rebuild the exact runtime needed to continue a
-run} --- no separate session state has to survive a process restart.
+\file{bootstrap.py} exists so that ``build me a working \code{Runtime} for this run'' is
+written once and shared by the CLI and the web UI. Its key idea, from its own docstring:
+run metadata (workspace path, adapter kind, scenario file, behavior version) lives in the
+\code{run\_created} event, so any process with the database can rebuild the exact runtime
+needed to continue a run. No session state has to survive a process restart.
 
 \code{resume\_run(store, run\_id, approval\_policy)}:
-\begin{enumerate}[nosep]
-  \item Projects the log; if the run is already terminal, returns immediately.
-  \item Counts how many \code{model\_responded} events were \emph{not} malformed
-  --- this is exactly how many script turns the mock adapter has consumed, so the
-  rebuilt \code{MockModelAdapter}'s \code{script\_i} is repositioned to that count.
-  \item Separately counts every \code{model\_responded} \emph{or} \code{model\_error}
-  event --- this is how many times \code{complete()} was called in total, used to
-  reposition the mock adapter's \code{calls} counter so fault matching
-  (\code{at\_call}, Sec.\,9) stays aligned after a resume.
-  \item Calls \code{Runtime.drive(run\_id)}, which picks up exactly where the fixed
-  point iteration (Sec.\,4) left off.
+
+\begin{enumerate}
+  \item Project the log; if the run is terminal, return immediately.
+  \item Count \code{model\_responded} events that are \emph{not} malformed. This is
+  taken to be how many script turns the mock adapter consumed, and \code{script\_i} is
+  repositioned to it.
+  \item Separately count every \code{model\_responded} \emph{or} \code{model\_error}
+  event. This is how many times \code{complete()} was called in total, and repositions
+  \code{calls} so that fault matching on \code{at\_call} stays aligned.
+  \item Call \code{drive(run\_id)}, which picks up where the fixed point left off.
 \end{enumerate}
 
-\begin{tcolorbox}[colback=red!6,colframe=red!50!black,title={Known limitation (from the README, stated by the project itself)},fonttitle=\bfseries\small]
-``Resume repositions the mock adapter by counting events. It is correct for the
-states the tests cover, but a run resumed in the middle of an injected model-fault
-sequence could realign fault triggers off by one. The honest fix is recording the
-adapter cursor in a checkpoint payload instead of inferring it.''
-\end{tcolorbox}
+Step 3 is the fix the README describes. Step 2 is wrong.
+
+\begin{honest}{Verified bug: resume rewinds the script by one after a scripted malformed turn}
+The README concedes a nearby issue: ``a run resumed in the middle of an injected
+model-fault sequence could realign fault triggers off by one.'' The actual defect is a
+different one, in the other counter, and it is demonstrable.
+
+Read \code{MockModelAdapter.complete()} carefully. The script index advances
+\emph{before} the turn's content is inspected:
+
+\begin{lstlisting}[language=Python]
+step = self.script[self.script_i]
+self.script_i += 1              # <- advances here, unconditionally
+input_text = json.dumps(messages, sort_keys=True, default=str)
+
+if "malformed" in step:
+    raise MalformedOutputError("scripted malformed output", raw=step["malformed"])
+\end{lstlisting}
+
+So a \emph{scripted} \code{malformed:} turn does consume a script slot. (An
+\emph{injected} malformed fault does not, because the fault plan is consulted earlier and
+raises before this block. That asymmetry is deliberate and correct.) But that scripted
+turn is recorded as \code{model\_responded} with \code{malformed: true}, and
+\code{resume\_run}'s step 2 counts only \code{model\_responded} events that are
+\textbf{not} malformed. It therefore does not count it.
+
+Result: resuming a run whose script contained a scripted malformed turn rewinds
+\code{script\_i} by one per such turn, and the malformed turn is served to the model
+again. Confirmed by driving the adapter directly:
+
+\begin{lstlisting}
+scripted malformed: calls=1 script_i=1   -> consumed a script turn: True
+injected malformed: calls=1 script_i=0   -> consumed a script turn: False
+
+resume_run would set script_i = 0
+the true position after that turn is  = 1
+MISMATCH: resume rewinds the script by 1 turn; the malformed turn is served again.
+\end{lstlisting}
+
+Two shipped scenarios contain scripted malformed turns:
+
+\begin{itemize}
+  \item \file{scenarios/data\_entry/malformed\_then\_recover.yaml}
+  \item \file{scenarios/research/malformed\_output\_fails\_run.yaml}
+\end{itemize}
+
+Neither is ever resumed by the test suite, and the scenario runner drives runs start to
+finish in one process, so nothing exercises the combination. That is why 93 tests pass
+over a real bug: the bug lives precisely in the gap between two features that are each
+tested alone.
+
+Consequence if hit: the resumed run re-raises the malformed output, burns a second entry
+against \code{max\_malformed} (default 2), and can fail a run with
+\code{malformed\_model\_output} that would have completed had it never been interrupted.
+The fix the README already proposes is the right one and fixes both this and the issue it
+does concede: record the adapter cursor in the \code{checkpoint} payload instead of
+inferring it. The cursor is the one piece of state that is genuinely not a function of the
+log, which is exactly why inferring it is where the event-sourced design springs a leak.
+\end{honest}
+
+\begin{keyidea}{The honest generalization, and the best thing to say about it in an interview}
+The project's thesis is ``all state is a function of the log''. This bug is what happens
+at the one place where that is not quite true.
+
+The mock adapter's script position is real state living outside the log, and
+\code{resume\_run} tries to reconstruct it by inference. The inference is a heuristic
+(``one script turn per non-malformed response'') that happens to be wrong for one case.
+Every other feature in this project is exact because it reads the log; this one is
+approximate because it guesses at something the log does not record.
+
+That is not an argument against event sourcing. It is the strongest argument \emph{for}
+it in the whole codebase: the single component that opted out of the discipline is the
+single component with a latent bug. And it is confined to the mock adapter, which is
+test infrastructure, so no production path is affected.
+\end{keyidea}
 
 % ============================================================
 \section{Package map}
 % ============================================================
 
-\begin{center}
-\begin{forest}
-for tree={
-  font=\ttfamily\small, grow'=0, edge={-{Stealth[length=1.8mm]}},
-  l sep=16pt, s sep=5pt, anchor=west, child anchor=west,
-  parent anchor=south, calign=first,
-  edge path={\noexpand\path[\forestoption{edge}] (!u.south west) +(7pt,0) |- (.child anchor)\forestoption{edge label};},
-  fit=band,
-  before typesetting nodes={
-    if n=1{insert before={[,phantom]}}{}
-  },
-}
+\begin{figure}[H]
+\centering
+\begin{forest} dirtree
 [src/agent\_runtime/
-  [events.py \textnormal{\scriptsize\ttfamily\ event types + canonical JSON encoding}]
-  [store.py \textnormal{\scriptsize\ttfamily\ SQLite append-only store + idempotency ledger}]
-  [projection.py \textnormal{\scriptsize\ttfamily\ log $\to$ RunState, log $\to$ messages}]
-  [runtime.py \textnormal{\scriptsize\ttfamily\ the loop, approval gating}]
-  [replay.py \textnormal{\scriptsize\ttfamily\ recorded stand-ins + comparator}]
-  [faults.py \textnormal{\scriptsize\ttfamily\ fault plans}]
-  [accounting.py \textnormal{\scriptsize\ttfamily\ usage $\to$ cost/latency}]
-  [agents.py \textnormal{\scriptsize\ttfamily\ example agent definitions}]
-  [bootstrap.py \textnormal{\scriptsize\ttfamily\ build runtimes for new/existing runs}]
-  [cli.py \textnormal{\scriptsize\ttfamily\ agentrun entry point}]
+  [events.py \textnormal{\scriptsize\itshape\ \ event types + canonical JSON encoding}]
+  [store.py \textnormal{\scriptsize\itshape\ \ SQLite append-only store + idempotency ledger}]
+  [projection.py \textnormal{\scriptsize\itshape\ \ log to RunState, log to messages}]
+  [runtime.py \textnormal{\scriptsize\itshape\ \ the loop, approval gating}]
+  [replay.py \textnormal{\scriptsize\itshape\ \ recorded stand-ins + comparator}]
+  [faults.py \textnormal{\scriptsize\itshape\ \ fault plans}]
+  [accounting.py \textnormal{\scriptsize\itshape\ \ usage to cost/latency}]
+  [agents.py \textnormal{\scriptsize\itshape\ \ example agent definitions}]
+  [bootstrap.py \textnormal{\scriptsize\itshape\ \ build runtimes for new/existing runs}]
+  [cli.py \textnormal{\scriptsize\itshape\ \ agentrun entry point}]
   [adapters/
-    [base.py \textnormal{\scriptsize\ttfamily\ ModelAdapter interface, Turn/Usage}]
-    [mock.py \textnormal{\scriptsize\ttfamily\ scripted offline adapter}]
+    [base.py \textnormal{\scriptsize\itshape\ \ ModelAdapter interface, ModelTurn, Usage}]
+    [mock.py \textnormal{\scriptsize\itshape\ \ scripted offline adapter}]
     [anthropic\_adapter.py]
     [openai\_adapter.py]
   ]
   [tools/
-    [registry.py \textnormal{\scriptsize\ttfamily\ ToolSpec, ToolRegistry, sandboxing}]
-    [executor.py \textnormal{\scriptsize\ttfamily\ timeout, retries, idempotency}]
-    [builtin.py \textnormal{\scriptsize\ttfamily\ the 7 shipped tools}]
+    [registry.py \textnormal{\scriptsize\itshape\ \ ToolSpec, ToolRegistry, sandbox resolve}]
+    [executor.py \textnormal{\scriptsize\itshape\ \ timeout, retries, idempotency}]
+    [builtin.py \textnormal{\scriptsize\itshape\ \ the 8 shipped tools}]
   ]
   [scenarios/
-    [loader.py \textnormal{\scriptsize\ttfamily\ YAML schema + loading}]
-    [runner.py \textnormal{\scriptsize\ttfamily\ run one scenario, check assertions}]
-    [report.py \textnormal{\scriptsize\ttfamily\ terminal + HTML reports, diffing}]
+    [loader.py \textnormal{\scriptsize\itshape\ \ YAML schema + loading}]
+    [runner.py \textnormal{\scriptsize\itshape\ \ run one scenario, check assertions}]
+    [report.py \textnormal{\scriptsize\itshape\ \ terminal + HTML reports, diffing}]
   ]
   [web/
-    [app.py \textnormal{\scriptsize\ttfamily\ FastAPI timeline + approval UI}]
-    [preview.py \textnormal{\scriptsize\ttfamily\ diff-style previews}]
+    [app.py \textnormal{\scriptsize\itshape\ \ FastAPI timeline + approval UI}]
+    [preview.py \textnormal{\scriptsize\itshape\ \ diff-style previews}]
   ]
 ]
 \end{forest}
-\end{center}
+\caption{The package. Alongside it: \file{scenarios/} (24 YAML files in three folders),
+\file{tests/} (13 modules), \file{docs/}, and the standard \file{README.md},
+\file{LICENSE} (MIT), \file{pyproject.toml}, \file{requirements.txt},
+\file{.env.example}.}
+\end{figure}
 
-Alongside \code{src/}, the repository root has \code{scenarios/} (24 YAML fixture
-files, three subfolders by agent), \code{tests/} (13 test modules, 1{,}357 lines,
-93 test functions --- counted directly from the files present), \code{docs/}
-(\code{ARCHITECTURE.md}, \code{WRITING\_SCENARIOS.md}), plus the standard
-\code{README.md}, \code{LICENSE} (MIT), \code{pyproject.toml},
-\code{requirements.txt} and \code{.env.example}.
+The dependency direction is worth noting: \file{events.py} imports nothing from the
+package, \file{store.py} imports only \file{events.py}, \file{projection.py} imports only
+\file{events.py}. The log and its interpretation sit at the bottom and know nothing about
+runtimes, adapters or tools. Everything else depends inward on them. That is why the
+claim ``the projection is the single interpreter'' is structurally enforced rather than a
+convention: no other module is positioned to reinterpret a log.
 
 % ============================================================
 \section{Dependencies}
 % ============================================================
 
-From \code{pyproject.toml} (runtime) and the \code{dev} extra:
-
 \begin{center}
 \small
-\begin{tabular}{@{}p{3.2cm}p{9.6cm}@{}}
+\begin{tabular}{@{}p{3.2cm}p{10.4cm}@{}}
 \toprule
-\textbf{Package} & \textbf{Role in this project} \\
+\textbf{Package} & \textbf{Role} \\
 \midrule
 \code{click} & builds the \code{agentrun} CLI \\
-\code{PyYAML} & parses scenario \code{.yaml} files \\
-\code{jsonschema} & validates tool arguments and scenario file structure against JSON Schema \\
-\code{httpx} & the HTTP client used by the live adapters and the \code{http\_get} tool \\
+\code{PyYAML} & parses scenario files; \code{yaml.safe\_load} is used, not \code{load} \\
+\code{jsonschema} & validates tool arguments and scenario structure \\
+\code{httpx} & HTTP client for the live adapters and \code{http\_get} \\
 \code{fastapi} + \code{uvicorn} & the web UI and its ASGI server \\
-\code{python-multipart} & required by FastAPI to parse the deny form's \code{reason} field (see the README's account of the one real bug this caused, below) \\
-\code{pytest} (dev only) & the test suite \\
+\code{python-multipart} & required by FastAPI to parse the deny form's \code{reason} field \\
+\code{pytest} (dev extra) & the test suite \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\begin{tcolorbox}[colback=blue!6,colframe=accent,title={A real bug the project's own history records},fonttitle=\bfseries\small]
-From the README: ``The first full-suite run failed with 5 errors in the web tests
-only: FastAPI's \code{Form} parsing needs \code{python-multipart}, which nothing
-else imports, so every non-web test passed and the gap only surfaced when the
-deny-with-reason endpoint was exercised through \code{TestClient}. Pinned it as a
-real dependency rather than a test extra since the deny form is a runtime feature.''
-This is reflected in \code{pyproject.toml}, where \code{python-multipart} is listed
-as a core dependency, not under \code{dev}.
-\end{tcolorbox}
+Seven runtime dependencies for this much functionality is restrained, and two absences
+are deliberate and defensible: no ORM (the store is 120 lines of SQL), and no templating
+engine (the HTML is string concatenation with escaping). Both are the right call at this
+size.
+
+\begin{keyidea}{A real bug the project's own history records}
+From the README: ``The first full-suite run failed with 5 errors in the web tests only:
+FastAPI's \code{Form} parsing needs \code{python-multipart}, which nothing else imports,
+so every non-web test passed and the gap only surfaced when the deny-with-reason
+endpoint was exercised through \code{TestClient}. Pinned it as a real dependency rather
+than a test extra since the deny form is a runtime feature.''
+
+This is confirmed in \file{pyproject.toml}, where \code{python-multipart} sits in
+\code{dependencies}, not under \code{dev}. The reasoning is right: the deny form is a
+shipped feature, so its parser is a runtime dependency, not a test one.
+\end{keyidea}
 
 % ============================================================
-\section{Testing}
+\section{Testing: what was actually run}
 % ============================================================
 
-The test suite (\code{tests/}, run with \code{pytest}) has 93 test functions across
-13 files (counted directly: \code{test\_accounting.py}, \code{test\_adapters.py},
-\code{test\_cli.py}, \code{test\_executor.py}, \code{test\_faults.py},
-\code{test\_replay.py}, \code{test\_resume.py}, \code{test\_runtime.py},
-\code{test\_scenarios.py}, \code{test\_store.py}, \code{test\_tools.py},
-\code{test\_web.py}, plus shared fixtures in \code{conftest.py}), matching the
-count the README states (``93 tests, all offline''). \code{conftest.py} provides a
-\code{make\_runtime()} helper that wires a fresh in-memory-style SQLite store, a
-sandbox workspace, the mock adapter and an auto-approve policy with a single call,
-used throughout the other test files. Every test runs offline: no test in this
-repository makes a live network call to Anthropic or OpenAI.
+The README claims ``93 tests, all offline'' and ``no live API calls were made''. Both
+were checked rather than taken on trust.
+
+\subsection{The count}
+
+\begin{lstlisting}
+$ ls tests/*.py | wc -l                  ->  13
+$ cat tests/*.py | wc -l                 ->  1357
+$ grep -c "^def test_" tests/*.py | ...  ->  93
+$ pytest --collect-only -q               ->  93 tests collected
+\end{lstlisting}
+
+93 test functions, 93 collected. There is no \code{parametrize} anywhere in
+\file{tests/}, so the collected count is not inflated by parametrization: 93 functions
+are 93 tests. The README's number is exact.
+
+\subsection{The run}
+
+\begin{lstlisting}
+$ pytest -q
+........................................................................ [ 77%]
+.....................                                                    [100%]
+93 passed, 1 warning in 46.80s
+\end{lstlisting}
+
+The single warning is a \code{StarletteDeprecationWarning} from FastAPI's
+\code{TestClient} about \code{httpx}, raised inside the installed library, not by this
+project's code.
+
+\subsection{The ``no live API calls'' claim, tested adversarially}
+
+A passing offline test suite does not by itself prove no network call was made: a call
+could succeed silently, or fail and be swallowed by a retry. So the suite was re-run
+with a guard that monkey-patches \code{socket.socket.connect},
+\code{socket.create\_connection} and \code{socket.getaddrinfo} to raise on any
+non-loopback address, turning any real network access into a hard test failure:
+
+\begin{lstlisting}
+$ pytest -q -p noweb
+NETWORK GUARD: zero outbound connections or DNS lookups attempted.
+93 passed, 1 warning in 55.01s
+\end{lstlisting}
+
+Not one outbound connection, and not even a DNS lookup. The claim is stronger than the
+README states it: the suite does not merely avoid \emph{calling} the providers, it never
+resolves their hostnames. This is a verified, defensible claim.
+
+\begin{keyidea}{Why this is architecture, not luck}
+Nothing in the test suite is skipped for lack of a key, and nothing is mocked at the
+last moment with a patching library. The adapters take an injectable \code{client}, the
+runtime takes an injectable adapter, the store takes an injectable clock, and the
+executor takes an injectable sleep and fault hook. The offline property falls out of the
+constructor signatures.
+
+That is also the honest limit of it: the same design that makes 93 tests run with no
+network is the reason none of them can tell you the live adapters work.
+\end{keyidea}
+
+\subsection{Beyond the suite}
+
+The CLI was driven end to end for this document: a scenario run pausing at the gate, a
+CLI approval resuming it to \code{finished}, a full replay reporting
+\code{byte-identical: yes}, a \code{--until} replay reporting mid-run state, the 24
+scenario suite passing 24/24 on \code{v1}, and the \code{v1} against \code{v2} diff
+reporting 3 regressions with first-divergence event numbers. Every transcript quoted in
+this document is real output from those runs. The two findings in Sections 9.4 and 18
+were found that way.
+
+\begin{honest}{Test coverage has a shape, and the gaps are where the bugs are}
+The suite is genuinely good: it tests the crash path, the fault paths, the replay
+comparator, denials, and the web endpoints. But two of the three defects found while
+writing this document sit in the seams between tested features, not inside any of them.
+
+The scripted-malformed resume bug needs \emph{scripted malformed} plus \emph{resume}.
+Both are tested; the combination is not. The phantom-approval issue needs \emph{replay
+--until} plus \emph{the approval queue} plus \emph{resume}. All three are tested; the
+combination is not. \file{test\_replay.py} asserts replays are byte-identical but never
+asks what the replayed run \emph{is} afterwards or what else can now see it.
+
+This is the normal shape of a suite written feature by feature, and it is worth being
+able to name: the tests check that each feature works, not that the features cannot
+interact badly. The event log makes the cross-feature test easy to write, since every
+assertion is just a query over events. It has not been written yet.
+\end{honest}
 
 % ============================================================
-\section{What the project's own retrospective says}
+\section{Honest findings, collected}
 % ============================================================
 
-The README includes a ``What I learned'' and ``What I'd do differently'' section
-written by the project's author. Reproduced here verbatim (not paraphrased, so
-nothing is lost or oversold) because it is part of the project's own honest account
-of its design and limits:
+Everything below is stated in full, with evidence, at the section given. Ordered by how
+much it would hurt to hear from an interviewer first.
 
-\subsection*{What was learned}
-\begin{itemize}[nosep]
-  \item Deriving all state from a projection collapsed the feature count: resume
-  after crash, continue after approval, and a plain next loop iteration became
-  literally the same function, so the recovery tests exercise the normal path
-  rather than a bespoke one.
-  \item Determinism is a budget spent field by field: any payload value that is not
-  a pure function of the log (a timestamp, a real-sleep-dependent attempt count, a
-  random id) is a future replay divergence.
-  \item Separating expected tool failures (\code{ToolError}) from unexpected ones
-  buys a retry policy for free: deterministic refusals fail fast, transient
-  exceptions and timeouts consume the retry budget with backoff.
-  \item \code{concurrent.futures} timeouts abandon the worker thread rather than
-  kill it --- a timeout answers ``how long do I wait,'' not ``how do I stop the
-  tool.'' Documented rather than papered over.
-  \item A per-event \code{"type:detail"} signature is enough for useful regression
-  diffs, with no diffing library needed.
-\end{itemize}
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.5cm}p{6.4cm}p{2.1cm}p{4.0cm}@{}}
+\toprule
+& \textbf{Finding} & \textbf{Where} & \textbf{Status} \\
+\midrule
+1 & A truncated replay leaves a phantom approval that, if approved, executes a real side effect in the real workspace & Sec. 9.4 & \textbf{Found here.} Reproduced end to end \\
+2 & Resume rewinds the mock script by one after a scripted malformed turn & Sec. 18 & \textbf{Found here.} Reproduced. README concedes a different, nearby case \\
+3 & The crash window between the handler and the ledger is open and untested; the test crashes in the closed window & Sec. 8 & \textbf{Found here.} Inherent limit; claim should be narrowed \\
+4 & The web approval gate has no authentication or CSRF protection & Sec. 17 & \textbf{Found here.} Mitigated by the localhost default \\
+5 & The preview re-implements tool logic and already disagrees with it on out-of-range cells & Sec. 17.1 & \textbf{Found here.} Benign direction, bad structure \\
+6 & \file{agentrun.db} is committed; the default DB path writes into the repo & Sec. 16 & \textbf{Found here.} Cleanliness \\
+7 & \code{except RuntimeError: pass} in replay swallows genuine store and adapter errors & Sec. 9.3 & \textbf{Found here.} Mislabels, does not hide \\
+8 & A too-short mock script is reported as malformed model output, not as a scenario bug & Sec. 13.1 & \textbf{Found here.} Comment overstates \\
+9 & \code{draft\_email} overwrites drafts sharing a subject & Sec. 12.1 & \textbf{Found here.} \\
+10 & \code{http\_get} is ungated and its allowlist is not re-checked after redirects & Sec. 12.1 & \textbf{Found here.} Allowlist defaults empty \\
+11 & Tool timeouts abandon the thread; a hung tool also hangs \code{execute()} & Sec. 8 & README states the leak; the hang is found here \\
+12 & Live adapters never exercised against the real APIs & Sec. 13.2 & README states it \\
+13 & Web approvals resume synchronously in the request handler & Sec. 17 & README states it \\
+14 & Event payloads carry no schema version & below & README states it \\
+15 & The price table is hardcoded and will drift; unknown models silently get the default & Sec. 11 & README states the drift \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\subsection*{What the author would do differently}
-\begin{itemize}[nosep]
-  \item The web UI's synchronous approval-resume should become a worker process
-  consuming a resume queue.
-  \item Resume's event-counting approach to repositioning the mock adapter is
-  correct for tested states but could misalign fault triggers in an edge case; a
-  recorded adapter cursor in the checkpoint payload would be the honest fix.
-  \item Event payloads carry no schema version; replay currently detects divergence
-  as a tripwire, not a migration story.
-  \item Tool timeouts do not kill the handler thread, so a truly hung tool leaks a
-  thread per attempt; subprocess isolation would fix this and give tools their own
-  memory space.
-  \item The in-house neutral message format ignores streaming and
-  provider-specific parallel tool-call semantics; the accounting price table is
-  hardcoded and will drift.
-\end{itemize}
+On finding 14, which has no section of its own because there is nothing in the code to
+point at: that is the point. Every event payload is written and read by whatever version
+of the code happens to be running. Replay detects that a change altered the loop's
+output, which the README fairly calls ``a tripwire, not a migration story''. The moment a
+payload shape changes, every old log becomes unreplayable with no way to tell which
+version wrote it. For a project whose entire premise is that the log is the durable
+asset, an unversioned log is the one structural gap that most deserves fixing first, and
+it is cheap now and expensive later.
+
+\begin{keyidea}{The fair summary}
+Every finding above is a defect in the operational shell, and not one is a defect in the
+central idea. The event log, the projection as sole interpreter, the gate as an ordering
+property rather than a lock, and byte-identical replay all hold up under examination and
+under execution. The thesis is sound and the thesis is demonstrated: 93 tests pass with
+provably zero network, replay is byte-identical on real runs, and the regression diff
+does the thing it claims.
+
+What the findings show is narrower and more interesting: the seams. The phantom approval
+happens because a replay is written into the same table as a real run and is
+distinguished only by a naming convention. The resume bug happens because one piece of
+state was inferred rather than recorded. Both are cases of the project not taking its own
+discipline quite far enough, which is a much better thing to have to defend than a design
+that does not work.
+\end{keyidea}
 
 % ============================================================
 \section{Glossary}
 % ============================================================
 \begin{description}[leftmargin=3.4cm, style=nextline]
+\item[Adapter] A class implementing a fixed interface around a specific model API or a fake.
 \item[Agent] A program that uses an LLM in a loop to decide and take actions via tools.
-\item[Adapter] A class implementing a fixed interface around a specific model API or fake.
 \item[Allowlist] A set of explicitly permitted values; everything else is rejected.
-\item[Approval gate] The point in the loop where a side-effecting tool call pauses for a human decision.
+\item[Approval gate] The point where a side-effecting call pauses for a human decision.
 \item[Backoff] Waiting longer between each successive retry.
 \item[Canonical encoding] A deterministic serialization where equal data always produces an identical string.
-\item[Checkpoint] A periodic event recording loop progress, for readability, not correctness.
-\item[Contract test] A test verifying request/response shape against a real API's spec, without calling the real API.
+\item[Checkpoint] A periodic event recording loop progress; for readability, not correctness.
+\item[Contract test] A test verifying request and response shape against an API's spec without calling it.
+\item[Deterministic] Same inputs, same outputs, every time.
 \item[Digest / hash] A short fixed-length fingerprint of a larger piece of data.
-\item[Event sourcing] Storing every state change as an immutable ordered log instead of overwriting current state.
-\item[Fixed-point iteration] A loop that recomputes its next step purely from its own last output.
+\item[Event sourcing] Storing every state change as an immutable ordered log instead of overwriting state.
+\item[Fault injection] Deliberately simulating failures to test that they are handled.
+\item[Fixed point iteration] A loop that recomputes its next step purely from its own last output.
 \item[Idempotency] Doing an operation twice has the same effect as doing it once.
 \item[JSON Schema] A specification language describing the required shape of JSON data.
-\item[LLM] Large language model: a machine learning model that generates text (or structured output) from a prompt.
-\item[Primary key] A column set guaranteed unique per row, used to enforce no-duplicate writes.
+\item[LLM] Large language model: a model that generates text or structured output from a prompt.
+\item[Primary key] A column set guaranteed unique per row, used here to enforce append-only ordering.
 \item[Projection] Computing derived state from an event log.
 \item[Regression test] A test proving something that used to work still works after a change.
-\item[Replay] Re-driving logic from only recorded data, with no live calls, and checking the result matches.
+\item[Replay] Re-driving logic from only recorded data, with no live calls, checking the result matches.
 \item[Sandbox] A restricted environment limiting what a program can access.
 \item[Side effect] An action with a lasting, observable consequence outside the program.
-\item[Unified diff] A standard compact text format for showing line-level differences between two versions of a file.
+\item[SQLite] A serverless relational database engine whose whole database is one file.
+\item[Unified diff] A compact standard format for showing line-level differences between two texts.
 \end{description}
 
 \end{document}
